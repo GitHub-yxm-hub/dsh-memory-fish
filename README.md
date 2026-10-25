@@ -1,6 +1,10 @@
-﻿# 小肥鱼记忆 · dsh-memory-fish
+# 小肥鱼记忆 · dsh-memory-fish
 
 ![banner](https://raw.githubusercontent.com/GitHub-yxm-hub/dsh-memory-fish/main/docs/banner.png)
+
+[![npm](https://img.shields.io/npm/v/dsh-memory-fish.svg)](https://www.npmjs.com/package/dsh-memory-fish)
+[![CI](https://github.com/GitHub-yxm-hub/dsh-memory-fish/actions/workflows/ci.yml/badge.svg)](https://github.com/GitHub-yxm-hub/dsh-memory-fish/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
 > 上下文成本恒定的本地记忆插件。记忆可以无限长，注入永远只有 ~600 tokens。
 > 它会睡觉、会复习，也记得住"上个月我们用的什么方案"。

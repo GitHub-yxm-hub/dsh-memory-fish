@@ -1,6 +1,10 @@
-﻿# dsh-memory-fish 🐟
+# dsh-memory-fish 🐟
 
 ![banner](https://raw.githubusercontent.com/GitHub-yxm-hub/dsh-memory-fish/main/docs/banner.png)
+
+[![npm](https://img.shields.io/npm/v/dsh-memory-fish.svg)](https://www.npmjs.com/package/dsh-memory-fish)
+[![CI](https://github.com/GitHub-yxm-hub/dsh-memory-fish/actions/workflows/ci.yml/badge.svg)](https://github.com/GitHub-yxm-hub/dsh-memory-fish/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
 > **Context-budgeted local memory for DeepSeek Harness.**
 > Memory can grow forever; the prompt injection stays at a fixed ~600 tokens.
