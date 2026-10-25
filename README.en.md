@@ -31,6 +31,7 @@ dsh-memory-fish splits *storage* from *injection*:
 - **Spaced repetition**: stability, nextReview, reviews; retrieval reinforces (×1.3 search, ×1.1 read); due items marked ⏰.
 - **Temporal validity**: `validFrom`/`validTo` + version history; `memory_search({ asOf: "2026-09-15" })` answers "what did we use last month".
 - **Auto-capture** of conversations into a raw journal (never injected, secrets redacted, 30-day retention).
+- **Dream reminder (C1)** — no scheduled tasks, no session-event writes. When the last dream is older than `dreamAfterHours` (24h default) or memories are due for review, the injection block adds a two-line nudge. Zero cost when nothing is due; nothing to clean up on uninstall.
 - **Optional visual panel**: a Settings section in DSH, plus a standalone page at `/memory-fish/panel`.
 
 ## Install

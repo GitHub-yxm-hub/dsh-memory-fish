@@ -1,4 +1,4 @@
-﻿// 小肥鱼记忆 · 冒烟测试
+// 小肥鱼记忆 · 冒烟测试
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -38,7 +38,7 @@ const ctx = {
   },
 };
 
-apply(ctx, { dir: memDir, budgetTokens: 600, profileTokens: 200 });
+apply(ctx, { dir: memDir, budgetTokens: 600, profileTokens: 200, dreamAfterHours: 0 });
 await new Promise(r => setTimeout(r, 300));
 
 const call = async (n, args) => {
@@ -72,6 +72,7 @@ check('跳过 subagent 会话', !jlines.some(l => l.includes('子代理')), jlin
 check('捕获含用户与助手', jlines.some(l => l.includes('"role":"user"')) && jlines.some(l => l.includes('"role":"assistant"')));
 check('journal 密钥已脱敏', !jlines.some(l => l.includes('sk-abcdefghijklmnopqrstuvwxyz123456')) && jlines.some(l => l.includes('[REDACTED]')));
 check('写锁已释放', !fs.existsSync(path.join(memDir, '.index.lock')));
+check('C1 睡梦提醒出现在注入里', injected().includes('### 睡梦'), injected().slice(-200));
 
 // --- 画像 / 保存 / 去重 ---
 const profile = await call('memory_profile_save', { content: '铁凝：喜欢写代码、折腾电脑、关注新技术。自称小肥鱼。中文交流，语气轻松。' });
@@ -154,6 +155,7 @@ check('三阶段睡眠都跑过（SWS/SHY/REM）', typeof dream.phases.sws === '
 check('睡眠报告含三个阶段标题', dream.report.includes('Phase 1') && dream.report.includes('Phase 2') && dream.report.includes('Phase 3'), dream.report.slice(0, 120));
 check('输出到期复习清单', Array.isArray(dream.dueReview), dream.dueReview);
 check('REM 建立了关联链接', dream.phases.rem >= 1, dream.phases.rem);
+check('做梦后提醒消失', !injected().includes('### 睡梦'), injected().slice(-200));
 
 // --- 面板 ---
 check('注册面板路由', routes.length >= 3, routes.map(r => r.path));

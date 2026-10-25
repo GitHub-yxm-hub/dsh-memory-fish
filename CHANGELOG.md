@@ -3,6 +3,19 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/), versioning follows [SemVer](https://semver.org/).
 
+## [0.7.0] — 2026-10-25
+
+### Added
+- **Dream reminder (C1)** — no scheduler dependency, no session-event writes.
+  `buildInjection` now computes whether a dream is due (`dreamAfterHours`, default
+  24) or memories are due for review, and appends a two-line `### 睡梦` nudge to
+  the injected block. Zero cost when nothing is due; nothing to initialize on
+  install or clean up on uninstall.
+- Config: `dreamReminder` (default `true`), `dreamAfterHours` (default `24`).
+- `stats.capturedSinceDream` tracks new journal records since the last dream and
+  resets after `memory_dream`.
+- Tests: reminder appears when due, disappears after a dream (51 assertions).
+
 ## [0.6.0] — 2026-10-25
 
 ### Changed

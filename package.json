@@ -1,6 +1,6 @@
 {
   "name": "dsh-memory-fish",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Context-budgeted local memory for DeepSeek Harness: fixed 600-token injection, three-stage sleep consolidation, spaced repetition, temporal validity. Zero dependencies, zero server.",
   "type": "module",
   "main": "index.mjs",
