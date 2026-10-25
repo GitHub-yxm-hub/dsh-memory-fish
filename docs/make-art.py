@@ -7,7 +7,7 @@ and not the DeepSeek logo.
 
 Usage: python docs/make-art.py
 """
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageChops
 import os
 
 OUT = os.path.dirname(os.path.abspath(__file__))
@@ -122,6 +122,62 @@ def make_logo(size=512, with_bg=True):
     return img.resize((size, size), Image.LANCZOS)
 
 
+def make_mono(size=512):
+    """Single-color mark for monochrome contexts (negative-space details)."""
+    S = 3
+    W = size * S
+    img = Image.new("RGBA", (W, W), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    cx, cy = W * 0.44, W * 0.52
+    rx, ry = W * 0.27, W * 0.215
+    WHITE = (255, 255, 255, 255)
+
+    d.polygon([(cx + rx * 0.86, cy), (cx + rx * 1.72, cy - ry * 0.78), (cx + rx * 1.55, cy)], fill=WHITE)
+    d.polygon([(cx + rx * 0.86, cy), (cx + rx * 1.72, cy + ry * 0.78), (cx + rx * 1.55, cy)], fill=WHITE)
+    d.ellipse([cx - rx, cy - ry, cx + rx, cy + ry], fill=WHITE)
+    for i in range(4):
+        px = cx - rx * 0.40 + i * rx * 0.26
+        d.rounded_rectangle([px, cy + ry * 0.74, px + rx * 0.12, cy + ry * 1.12], radius=W * 0.008, fill=WHITE)
+    pz = W * 0.075
+    fx, fy = cx + rx * 0.02, cy - ry - pz * 0.72
+    d.rounded_rectangle([fx, fy, fx + pz * 1.7, fy + pz], radius=pz * 0.22, fill=WHITE)
+    d.ellipse([fx + pz * 0.58, fy - pz * 0.46, fx + pz * 1.14, fy + pz * 0.10], fill=WHITE)
+
+    holes = Image.new("L", (W, W), 0)
+    hd = ImageDraw.Draw(holes)
+    for i in range(3):
+        y = cy - ry * 0.12 + i * ry * 0.34
+        x0 = cx - rx * 0.10
+        w = rx * (0.78 - i * 0.12)
+        h = ry * 0.20
+        hd.rounded_rectangle([x0, y - h / 2, x0 + w, y + h / 2], radius=h / 2, fill=255)
+    nodes = [
+        (cx - rx * 0.28, cy - ry * 0.62),
+        (cx + rx * 0.06, cy - ry * 0.74),
+        (cx + rx * 0.38, cy - ry * 0.60),
+        (cx + rx * 0.34, cy - ry * 0.30),
+    ]
+    for i, a in enumerate(nodes):
+        for b in nodes[i + 1:]:
+            if ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5 < rx * 0.62:
+                hd.line([a, b], fill=255, width=max(2, int(W * 0.008)))
+    for n in nodes:
+        r = W * 0.012
+        hd.ellipse([n[0] - r, n[1] - r, n[0] + r, n[1] + r], fill=255)
+    er = W * 0.052
+    ex, ey = cx - rx * 0.46, cy - ry * 0.28
+    hd.ellipse([ex - er, ey - er, ex + er, ey + er], fill=255)
+    hd.arc([cx - rx * 0.70, cy + ry * 0.06, cx - rx * 0.18, cy + ry * 0.50],
+           start=15, end=155, fill=255, width=max(2, int(W * 0.013)))
+
+    alpha = ImageChops.subtract(img.getchannel("A"), holes)
+    img.putalpha(alpha)
+    # keep a small white catchlight in the eye so it doesn't disappear
+    d2 = ImageDraw.Draw(img)
+    d2.ellipse([ex - er * 0.42, ey - er * 0.48, ex - er * 0.02, ey - er * 0.08], fill=WHITE)
+    return img.resize((size, size), Image.LANCZOS)
+
+
 def make_banner(logo_transparent, path):
     S = 2
     W, H = 1280, 640
@@ -205,6 +261,7 @@ LOGO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" widt
 """
 
 logo_bg = make_logo(512, with_bg=True)
+make_mono(512).save(os.path.join(OUT, 'logo-mono.png'))
 logo_bg.save(os.path.join(OUT, "logo.png"))
 logo_clear = make_logo(512, with_bg=False)
 logo_clear.save(os.path.join(OUT, "logo-transparent.png"))
@@ -214,4 +271,5 @@ with open(os.path.join(ROOT, "icon.svg"), "w", encoding="utf-8") as f:
 print("logo:", os.path.join(OUT, "logo.png"))
 print("banner:", os.path.join(OUT, "banner.png"))
 print("icon:", os.path.join(ROOT, "icon.svg"))
+
 
