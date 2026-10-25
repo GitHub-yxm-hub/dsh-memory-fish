@@ -183,6 +183,7 @@ const { Store } = await import(pathToFileURL(path.join(root, 'lib/store.mjs')).h
 const { buildDream } = await import(pathToFileURL(path.join(root, 'lib/dream.mjs')).href);
 const { saveMemoryCore } = await import(pathToFileURL(path.join(root, 'lib/core.mjs')).href);
 const { estTokens } = await import(pathToFileURL(path.join(root, 'lib/util.mjs')).href);
+const { buildInjection } = await import(pathToFileURL(path.join(root, 'lib/inject.mjs')).href);
 
 // 主实例：归档 / 硬截断 / 重写时间
 const profileBefore = fs.readFileSync(path.join(memDir, 'profile.md'), 'utf8');
@@ -232,6 +233,27 @@ const bootFishStore = async (overrides = {}) => {
   store.stats.lastProfileRewrite = new Date().toISOString();
   const d = await buildDream(store, cfg, 1);
   check('v0.8 未到期 → 报告「画像到期：否」且不写任务文件', d.report.includes('画像到期：否') && d.mentalModel.due === false && d.mentalModel.taskFile === null, d.mentalModel);
+}
+
+// --- v0.8.1 注入块缓存稳定性（KV 前缀缓存：文案不得随每轮计数/小时变化）---
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fish-inj-'));
+  const st = new Store(dir);
+  await st.init();
+  const cfgInj = resolveConfig({ dir, dreamReminder: true, dreamAfterHours: 24 });
+  st.stats.lastDream = new Date(Date.now() - 30 * 3600000).toISOString();
+  st.stats.capturedSinceDream = 3;
+  const r1 = buildInjection(st, cfgInj).text;
+  st.stats.capturedSinceDream = 9; // 又聊了几轮：注入块不应变化
+  const r2 = buildInjection(st, cfgInj).text;
+  check('v0.8.1 欠梦提醒不随每轮计数变化', r1 === r2 && r1.includes('### 睡梦'), { same: r1 === r2, hasDream: r1.includes('### 睡梦') });
+  check('v0.8.1 欠梦文案用绝对日期、无小时/计数', r1.includes('上次整理') && !r1.includes('距上次做梦') && !r1.includes('新增对话'), r1.split('\n').filter(l => l.includes('睡梦') || l.includes('欠梦')));
+  const m = await saveMemoryCore(st, cfgInj, { title: '到期测试记忆', content: '用于测试复习到期的阈值文案，不显示精确条数。', tags: ['测试'] });
+  st.entries.find(x => x.id === m.id).nextReview = new Date(Date.now() - 86400000).toISOString();
+  const r3 = buildInjection(st, cfgInj).text;
+  check('v0.8.1 热索引不再逐条 ⏰（防搜索后抖动）', !r3.split('\n').some(l => l.startsWith('- ⏰')), r3.split('\n').filter(l => l.includes('到期')));
+  check('v0.8.1 到期用阈值文案', r3.includes('有记忆到期该复习'), r3.split('\n').filter(l => l.includes('到期')));
+  check('v0.8.1 同状态两次渲染字节一致', buildInjection(st, cfgInj).text === r3);
 }
 
 // --- 整理 / 置顶 / 遗忘 ---

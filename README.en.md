@@ -133,10 +133,11 @@ Key options: `dir`, `budgetTokens`, `profileTokens`, `maxHotLines`,
 ## Tests
 
 ```bash
-npm test   # 64 assertions: capture, redaction, save/dedupe/NOOP, search,
+npm test   # 69 assertions: capture, redaction, save/dedupe/NOOP, search,
            # asOf history, sleep phases + Phase 4 mental model (due /
-           # not-due / disabled, task file, archive, hard clamp), panel
-           # routes, lock release, budget
+           # not-due / disabled, task file, archive, hard clamp),
+           # byte-stable injection (cache friendly), panel routes, lock
+           # release, budget
 ```
 
 CI runs on Linux and Windows with Node 22 and 24.

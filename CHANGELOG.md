@@ -3,6 +3,22 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/), versioning follows [SemVer](https://semver.org/).
 
+## [0.8.1] — 2026-10-26
+
+### Fixed
+- **KV-prefix-cache churn in the injected block.** The C1 dream nudge used to
+  print `距上次做梦 N 小时 · 新增对话 M 条`, so while a dream was overdue the
+  system-prompt prefix changed on *every* turn (each captured message bumped the
+  counter) and invalidated the whole prompt cache each request. The reminder is
+  now day-stable: `欠梦（上次整理 2026-10-24）→ 建议先 memory_dream…` — it only
+  changes when a dream actually runs.
+- **Per-item `⏰` markers removed from the hot index.** A `memory_search` /
+  `memory_read` reinforcement could flip a marker and rewrite the prefix; the
+  hot index is now purely `★` / `·`, and due reviews are signalled by one
+  threshold line (`> ⏰ 有记忆到期该复习…`) that only appears or disappears.
+- Tests: 69 assertions — added byte-identical-render and no-per-turn-counter
+  assertions.
+
 ## [0.8.0] — 2026-10-25
 
 ### Added
