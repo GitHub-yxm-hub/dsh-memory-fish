@@ -19,7 +19,7 @@
 
 | 层 | 内容 | 注入 | 预算 |
 |---|---|---|---|
-| L0 画像 | 你是谁、偏好、硬约束 | 每次会话 | ≤200 tok |
+| L0 画像 | 你是谁、偏好、硬约束（v0.8 起自动重写） | 每次会话 | ≤200 tok |
 | L1 热索引 | 置顶 + 最近 10–20 条标题 | 每次会话 | ≤400 tok |
 | L2 温记忆 | 完整正文 | 按需工具读取 | 0 |
 | L3 冷档案 | 压缩前原文、被替代版本 | 从不注入 | 0 |
@@ -61,7 +61,7 @@
 2. **SHY 稳态**：按显著性加权衰减，长期低分记忆降级归档
 3. **REM**：为共享标签/相似的记忆建立「相关链接」，不改内容
 
-报告写到 `dream/YYYY-MM-DD.md`，包含三阶段明细 + 待复习清单 + 候选记忆。
+报告写到 `dream/YYYY-MM-DD.md`，包含三阶段明细 + 待复习清单 + 候选记忆。v0.8 起还有 **Phase 4 · Mental model**（见下）。
 
 ### 睡梦提醒（C1：不依赖宿主调度器）
 插件**不创建任何定时任务**，也不写宿主的 session 事件日志。它只在注入块里按需提醒：
@@ -95,6 +95,28 @@
 - `memory_search({ asOf: "2026-09-15" })` 按时间点查当时有效的版本 —— 能回答"上个月我们用什么方案"
 - 历史版本不参与复习加固，避免旧事实被强化
 
+## v0.8 Mental model：L0 画像自动重写
+
+L0 画像是决定"agent 怎么和你说话"的那 200 tokens。手写会过期，全自动又容易跑偏，所以 v0.8 把工作拆成三段：
+
+1. **插件判断到期**：`memory_dream` 的 Phase 4 检查 `stats.lastProfileRewrite`，超过 `mentalModelEveryDays`（默认 7 天）或从未重写过，就算到期
+2. **插件准备材料**：写 `dream/YYYY-MM-DD-mental-model.md`，内含当前画像、最近 20 条活跃记忆（id / 标题 / 标签 / 正文前 200 字）、最近 3 天睡梦摘要，以及给 subagent 的指令
+3. **subagent 重写**：主 agent 先 `memory_profile_archive` 归档旧画像，再用 `subagent` 读任务文件、写出 ≤200 tokens 的新画像并返回（独立上下文，主上下文几乎零成本），最后校验长度/密钥 → `memory_profile_save` 落盘，`stats.lastProfileRewrite` 自动更新
+
+睡梦报告里会多一节：
+
+```
+## 🧠 Phase 4 · Mental model（L0 画像自动重写）
+- 画像到期：是 → 任务文件：~/.dsh/memory-fish/dream/2026-10-25-mental-model.md
+```
+
+为什么不是插件自己调 LLM（插件没有 LLM 依赖，也不该引入 token 成本），也不是主会话自己写（要读大量记忆，主上下文太贵）—— 这是 DSH 的能力边界决定的：插件跑在 host 进程里不能 spawn subagent，只有 agent 轮次能调 `subagent`。
+
+安全边界：
+- 只改 L0，**绝不删除或覆盖 L1/L2 记忆**
+- 旧画像先归档到 `profile-history/`，随时可回滚
+- `memory_profile_save` 内置密钥拦截 + `clampToBudget` 硬截断，画像永远不会撑爆 200 token 预算
+
 ## 工具
 
 | 工具 | 作用 |
@@ -105,8 +127,9 @@
 | `memory_list` | 最近记忆 |
 | `memory_pin` | 置顶/取消（置顶不参与衰减） |
 | `memory_forget` | 软删除 + 墓碑 |
-| `memory_profile_save` | 写 L0 画像 |
-| `memory_dream` | 睡梦：回顾对话、提炼候选、写报告 |
+| `memory_profile_save` | 写 L0 画像（超长硬截断、拒密钥，记录重写时间） |
+| `memory_profile_archive` | 归档当前画像到 `profile-history/`（重写前调用，可回滚） |
+| `memory_dream` | 睡梦：回顾对话、提炼候选、写报告；v0.8 起含 Phase 4 画像重写任务 |
 | `memory_stats` | 查看注入 token / 条数 / 磁盘占用 / 捕获数 |
 | `memory_consolidate` | 手动整理（dry-run 可选） |
 
@@ -114,13 +137,14 @@
 
 ```
 ~/.dsh/memory-fish/
-├── profile.md      # L0
+├── profile.md      # L0（≤200 tok，常驻注入）
+├── profile-history/ # v0.8：每次重写前的旧画像快照，可回滚
 ├── index.json      # 元数据索引（可重建）
 ├── memories/       # L2：每条一个 Markdown
 ├── archive/        # L3：旧版本、被替代、被遗忘的原文
 ├── journal/        # 自动捕获的原始对话（按天 jsonl，永不注入）
-├── dream/          # 睡梦报告（按天 md）
-└── stats.json      # 计数
+├── dream/          # 睡梦报告（按天 md）+ v0.8 画像重写任务（*-mental-model.md）
+└── stats.json      # 计数（含 lastProfileRewrite）
 ```
 
 全部人类可读、可 git、可手改。索引丢失会从 `memories/*.md` 自动重建。
@@ -154,8 +178,9 @@ client/client.js 设置页面板（浏览器半）
 ## 测试
 
 ```bash
-npm test   # 49 项断言：捕获、脱敏、保存/去重/NOOP、检索、asOf 历史、
-           # 睡眠三阶段、面板路由、锁释放、预算
+npm test   # 64 项断言：捕获、脱敏、保存/去重/NOOP、检索、asOf 历史、
+           # 睡眠三阶段 + Phase 4 画像重写（到期/未到期/关闭、任务文件、
+           # 归档、硬截断）、面板路由、锁释放、预算
 ```
 
 CI 在 Linux / Windows × Node 22 / 24 上跑。

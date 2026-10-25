@@ -52,7 +52,7 @@ const check = (label, cond, extra) => {
 };
 
 console.log('registered tools:', Object.keys(tools).join(', '));
-check('注册 10 个工具', Object.keys(tools).length === 10);
+check('注册 11 个工具', Object.keys(tools).length === 11);
 
 // --- 自动捕获 ---
 const emit = (session, event) => listeners.filter(l => l.event === 'session/event').forEach(l => l.fn(session, event));
@@ -176,6 +176,63 @@ check('面板拒绝跨源', await (async () => {
   await stateRoute.handler({ method: 'GET', headers: { host: '127.0.0.1:36336', origin: 'http://evil.example.com' } }, r);
   return r.code === 403;
 })());
+
+// --- v0.8 Mental model（L0 画像自动重写）---
+const { resolveConfig } = await import(pathToFileURL(path.join(root, 'lib/config.mjs')).href);
+const { Store } = await import(pathToFileURL(path.join(root, 'lib/store.mjs')).href);
+const { buildDream } = await import(pathToFileURL(path.join(root, 'lib/dream.mjs')).href);
+const { saveMemoryCore } = await import(pathToFileURL(path.join(root, 'lib/core.mjs')).href);
+const { estTokens } = await import(pathToFileURL(path.join(root, 'lib/util.mjs')).href);
+
+// 主实例：归档 / 硬截断 / 重写时间
+const profileBefore = fs.readFileSync(path.join(memDir, 'profile.md'), 'utf8');
+const arch = await call('memory_profile_archive', {});
+check('v0.8 画像归档生成 profile-history 文件', arch.ok === true && arch.file.includes('profile-history') && fs.existsSync(arch.file), arch);
+check('v0.8 归档内容等于旧画像', fs.readFileSync(arch.file, 'utf8') === profileBefore);
+const longProfile = '铁凝：喜欢写代码、折腾电脑、关注新技术（AI / 开发工具 / 编程前沿）。中文交流，语气轻松。'.repeat(40);
+const trunc = await call('memory_profile_save', { content: longProfile });
+const storedBody = fs.readFileSync(path.join(memDir, 'profile.md'), 'utf8').replace(/^#.*\n+/, '').trim();
+check('v0.8 超长画像被硬截断到 ≤ profileTokens', trunc.truncated === true && estTokens(storedBody) <= 200, { tokens: estTokens(storedBody), reported: trunc.tokens });
+const restored = await call('memory_profile_save', { content: '铁凝：喜欢写代码、折腾电脑、关注新技术。自称小肥鱼。中文交流，语气轻松。' });
+check('v0.8 画像写入记录重写时间', typeof restored.lastRewrite === 'string' && restored.rewrites >= 1, restored);
+const statsMM = await call('memory_stats', {});
+check('v0.8 stats 带画像重写状态', typeof statsMM.lastProfileRewrite === 'string' && statsMM.profileRewriteDue === false && statsMM.mentalModel === true, statsMM);
+
+// 主实例 dream（刚刚重写过）：Phase 4 存在但未到期
+check('v0.8 睡梦报告含 Phase 4', dream.report.includes('🧠 Mental model') && dream.report.includes('Phase 4') && dream.mentalModel.enabled === true, dream.mentalModel);
+check('v0.8 刚重写过 → 画像未到期', dream.report.includes('画像到期：否') && dream.mentalModel.due === false && dream.mentalModel.taskFile === null, dream.mentalModel);
+
+// 隔离实例：精确控制 lastProfileRewrite
+const bootFishStore = async (overrides = {}) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fish-mm-'));
+  const store = new Store(dir);
+  await store.init();
+  const cfg = resolveConfig({ dir, ...overrides });
+  return { store, cfg };
+};
+{
+  const { store, cfg } = await bootFishStore({ mentalModel: false });
+  const d = await buildDream(store, cfg, 1);
+  check('v0.8 mentalModel:false 时报告无 Phase 4', !d.report.includes('Phase 4') && !d.report.includes('画像到期') && d.mentalModel.taskFile === null, d.mentalModel);
+}
+{
+  const { store, cfg } = await bootFishStore({ mentalModel: true, mentalModelEveryDays: 7 });
+  fs.writeFileSync(store.profileFile, '# 小肥鱼记忆 · L0 画像\n\n铁凝：偏好中文、语气轻松、喜欢表情包。\n', 'utf8');
+  const m = await saveMemoryCore(store, cfg, { title: '画像重写材料记忆', content: '铁凝喜欢写代码和折腾电脑，关注新技术。', tags: ['测试'] });
+  const d = await buildDream(store, cfg, 1);
+  check('v0.8 从未重写 → 报告「画像到期：是」', d.report.includes('画像到期：是') && d.mentalModel.due === true, d.report.slice(-200));
+  check('v0.8 到期时任务文件落盘', typeof d.mentalModel.taskFile === 'string' && fs.existsSync(d.mentalModel.taskFile) && d.mentalModel.taskFile.endsWith('-mental-model.md'), d.mentalModel.taskFile);
+  const task = fs.readFileSync(d.mentalModel.taskFile, 'utf8');
+  check('v0.8 任务文件含当前画像', task.includes('铁凝：偏好中文、语气轻松、喜欢表情包。'), task.slice(0, 160));
+  check('v0.8 任务文件含最近记忆 id/标题/标签/正文', task.includes(m.id) && task.includes('画像重写材料记忆') && task.includes('[测试]') && task.includes('铁凝喜欢写代码和折腾电脑'), task.slice(0, 200));
+  check('v0.8 任务文件含 subagent 指令', task.includes('画像重写员') && task.includes('TOKENS:') && task.includes('memory_profile_archive'), task.slice(-300));
+}
+{
+  const { store, cfg } = await bootFishStore({ mentalModel: true, mentalModelEveryDays: 7 });
+  store.stats.lastProfileRewrite = new Date().toISOString();
+  const d = await buildDream(store, cfg, 1);
+  check('v0.8 未到期 → 报告「画像到期：否」且不写任务文件', d.report.includes('画像到期：否') && d.mentalModel.due === false && d.mentalModel.taskFile === null, d.mentalModel);
+}
 
 // --- 整理 / 置顶 / 遗忘 ---
 const cons = await call('memory_consolidate', { dryRun: false });

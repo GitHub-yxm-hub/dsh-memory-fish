@@ -1,7 +1,7 @@
 {
   "name": "dsh-memory-fish",
-  "version": "0.7.0",
-  "description": "Context-budgeted local memory for DeepSeek Harness: fixed 600-token injection, three-stage sleep consolidation, spaced repetition, temporal validity. Zero dependencies, zero server.",
+  "version": "0.8.0",
+  "description": "Context-budgeted local memory for DeepSeek Harness: fixed 600-token injection, three-stage sleep consolidation, spaced repetition, temporal validity, subagent-driven L0 mental-model rewrite. Zero dependencies, zero server.",
   "type": "module",
   "main": "index.mjs",
   "icon": "./icon.svg",
@@ -38,7 +38,8 @@
     "local-first",
     "token-budget",
     "spaced-repetition",
-    "sleep-consolidation"
+    "sleep-consolidation",
+    "mental-model"
   ],
   "license": "MIT",
   "repository": {

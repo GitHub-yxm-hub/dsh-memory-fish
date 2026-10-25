@@ -7,6 +7,26 @@
 
 ---
 
+## v0.8 落地变更 · Mental model（L0 画像自动重写）
+
+> 借鉴 Hindsight 的 mental models：为长期问题维护一份自动重写的答案，读的时候零 LLM。
+
+L0 画像是"每次会话都常驻、决定 agent 怎么和用户说话"的那 200 tokens。手写会过期，全自动又容易跑偏。v0.8 的分工：
+
+| 角色 | 负责 |
+|---|---|
+| **规则（插件）** | 判断到期（`stats.lastProfileRewrite` + `mentalModelEveryDays`）、准备材料、写任务文件、归档旧画像、硬截断校验预算 |
+| **LLM（subagent）** | 读任务文件 → 写出 ≤200 tokens 的新画像 → 返回文本 |
+| **主 agent** | 先 `memory_profile_archive`，再把任务文件路径交给 subagent，最后 `memory_profile_save` 落盘 |
+
+为什么是 subagent：
+
+- 插件内直接调 LLM：插件没有 LLM 服务依赖，也不该引入 token 成本；宿主 API 不保证稳定。
+- 主会话自己写：画像重写要读大量记忆，占用主上下文，很贵。
+- **subagent**：独立上下文、可读文件、可调工具，只把最终画像带回 —— 主上下文几乎零成本。
+
+安全边界：只改 L0，绝不删/改 L1/L2；旧画像进 `profile-history/` 可回滚；`SECRET_RE` 拦密钥；`clampToBudget` 硬保证预算。
+
 ## v0.2 落地变更
 
 - **自动捕获**：`session/event` 把 user/assistant 消息追加到 `journal/YYYY-MM-DD.jsonl`（L3 原始层，永不注入）。单条截断 4000 字符，子代理会话默认跳过。捕获零上下文成本。

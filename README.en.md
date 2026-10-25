@@ -39,6 +39,31 @@ dsh-memory-fish splits *storage* from *injection*:
 - **Auto-capture** of conversations into a raw journal (never injected, secrets redacted, 30-day retention).
 - **Dream reminder (C1)** — no scheduled tasks, no session-event writes. When the last dream is older than `dreamAfterHours` (24h default) or memories are due for review, the injection block adds a two-line nudge. Zero cost when nothing is due; nothing to clean up on uninstall.
 - **Optional visual panel**: a Settings section in DSH, plus a standalone page at `/memory-fish/panel`.
+- **Mental model (v0.8)**: the L0 profile is rewritten periodically — the plugin decides due-ness and writes a task file, an isolated subagent does the writing, so the main context pays almost nothing.
+
+## Mental models (v0.8): L0 auto-rewrite
+
+The L0 profile is the ~200 tokens that decide how the agent talks to you. Hand-written
+profiles go stale; fully automatic ones drift. v0.8 splits the work:
+
+1. **Plugin judges due-ness** — `memory_dream` Phase 4 compares
+   `stats.lastProfileRewrite` against `mentalModelEveryDays` (default 7).
+2. **Plugin prepares materials** — writes `dream/YYYY-MM-DD-mental-model.md` with the
+   current profile, the 20 most recent active memories (id / title / tags / 200-char
+   excerpt), the last 3 dream-report summaries, and rewrite instructions.
+3. **Subagent rewrites** — the main agent first calls `memory_profile_archive`
+   (old profile → `profile-history/`), then hands the task file to an isolated
+   `subagent`, which returns a ≤200-token profile as plain text.
+4. **Main agent persists** — validates length/secrets and calls `memory_profile_save`,
+   which stamps `stats.lastProfileRewrite` so the next dream knows it is not due.
+
+The dream report gains `## 🧠 Phase 4 · Mental model` with `画像到期：是/否` and the
+task-file path. Why a subagent and not plugin-internal LLM calls: the plugin has no
+LLM dependency and should not add token cost; why not the main session: rewriting
+means reading lots of memories, which is expensive in the main context.
+
+Safety: only L0 changes (L1/L2 memories are never touched), old profiles are archived
+and rollback-able, secrets are refused, and `clampToBudget` guarantees the token budget.
 
 ## Install
 
@@ -64,9 +89,10 @@ Requirements: Node.js ≥ 22.19, DeepSeek Harness 0.2.x (tested on 0.2.1).
 | `memory_list` | Recent memories |
 | `memory_pin` | Pin/unpin (pinned never decays) |
 | `memory_forget` | Soft delete + tombstone |
-| `memory_profile_save` | Write the L0 profile |
-| `memory_dream` | Run the three-stage sleep; returns phases, due-review list, candidates |
-| `memory_stats` | Injection tokens, counts, salience avg, due count |
+| `memory_profile_save` | Write the L0 profile (hard-clamped to `profileTokens`, secrets refused, stamps rewrite time) |
+| `memory_profile_archive` | Copy the current profile to `profile-history/` before a rewrite |
+| `memory_dream` | Run the three-stage sleep; returns phases, due-review list, candidates, mental-model task |
+| `memory_stats` | Injection tokens, counts, salience avg, due count, profile-rewrite status |
 | `memory_consolidate` | Merge near-duplicates, archive weak memories (dry-run supported) |
 
 ## Architecture
@@ -102,13 +128,15 @@ Pass config through the profile's `cordis.patch.yml`:
 Key options: `dir`, `budgetTokens`, `profileTokens`, `maxHotLines`,
 `archiveAfterDays`, `dedupeThreshold`, `noopThreshold`, `reviewEnabled`,
 `autoCapture`, `captureMaxChars`, `journalKeepDays`, `dreamDays`,
-`panelPath`, `apiBase`, `debug`.
+`mentalModel`, `mentalModelEveryDays`, `panelPath`, `apiBase`, `debug`.
 
 ## Tests
 
 ```bash
-npm test   # 46 assertions: capture, redaction, save/dedupe/NOOP, search,
-           # asOf history, sleep phases, panel routes, lock release, budget
+npm test   # 64 assertions: capture, redaction, save/dedupe/NOOP, search,
+           # asOf history, sleep phases + Phase 4 mental model (due /
+           # not-due / disabled, task file, archive, hard clamp), panel
+           # routes, lock release, budget
 ```
 
 CI runs on Linux and Windows with Node 22 and 24.

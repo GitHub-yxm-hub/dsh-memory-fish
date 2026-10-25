@@ -3,6 +3,39 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/), versioning follows [SemVer](https://semver.org/).
 
+## [0.8.0] — 2026-10-25
+
+### Added
+- **Mental model: L0 profile auto-rewrite, subagent-driven.** `buildDream` gained
+  **Phase 4 · Mental model**: when `stats.lastProfileRewrite` is missing or older
+  than `mentalModelEveryDays` (default 7 days), it writes
+  `dream/YYYY-MM-DD-mental-model.md` containing the current profile, the 20 most
+  recent active memories (`id` / title / tags / 200-char excerpt), the last 3
+  dream-report summaries, and the rewrite instructions for the subagent. The dream
+  report gains a `🧠 Phase 4 · Mental model` section (`画像到期：是/否` + task path).
+- `memory_profile_archive` tool: copies the current `profile.md` to
+  `profile-history/YYYYMMDD-HHmmss.md` before a rewrite (rollback history).
+- `memory_profile_save` now **hard-clamps** content to `profileTokens` with the new
+  `clampToBudget` (binary-search prefix cut, budget guaranteed including the
+  truncation marker) and records `stats.lastProfileRewrite` /
+  `stats.profileRewrites`, so the next dream can judge due-ness.
+- `memory_dream` returns `mentalModel {enabled, due, everyDays, lastRewrite,
+  daysSince, taskFile}`; `memory_stats` adds `mentalModel`, `lastProfileRewrite`,
+  `profileRewrites`, `profileRewriteDue`, `mentalModelEveryDays`, `profileTokens`.
+- Panel API (`/memory-fish/api/state`) exposes `lastProfileRewrite`,
+  `profileRewrites`, `profileDue`; the panel shows the last rewrite date.
+- Config: `mentalModel` (default `true`), `mentalModelEveryDays` (default `7`);
+  new data directory `profile-history/`.
+- Tests: 64 assertions — Phase 4 due / not-due / disabled, task-file contents,
+  archive equality, hard truncation, rewrite timestamp (all previous tests green).
+
+### Design notes
+- The rewrite itself runs in an **isolated subagent** that reads the task file, so
+  the main context pays almost nothing; the plugin never calls an LLM. The plugin's
+  job is only due-ness + materials + disk I/O.
+- Only L0 changes: L1/L2 memories are never touched, old profiles are archived and
+  therefore rollback-able.
+
 ## [0.7.0] — 2026-10-25
 
 ### Added
