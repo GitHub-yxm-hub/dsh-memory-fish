@@ -663,7 +663,7 @@ const pushRaw = async (store, over) => {
   const yesterday = dayOffset(-1);
   await store.saveDreamReport(yesterday, '# 睡梦报告\n\n- 昨天复盘了发布流程。\n');
   const t = await taskCore(store, cfg, { action: 'add', title: '给插件加水印', content: '给 SVG 图加水印并导出 PNG。', note: '验收：输出可预览' });
-  const doneRes = await taskCore(store, cfg, { action: 'done', id: t.id });
+  const doneRes = await taskCore(store, cfg, { action: 'done', id: t.id, note: '用 sharp 处理，验收通过' });
   store.byId(t.id).tags = ['部署'];
   const memTagged = await saveMemoryCore(store, cfg, { title: '水印处理统一用 sharp', content: '水印处理统一用 sharp，避免 canvas 原生依赖。', tags: ['部署'] });
   const memOther = await saveMemoryCore(store, cfg, { title: '导出图片统一 PNG', content: '导出图片统一 PNG 300dpi。', tags: ['导出'] });
@@ -676,6 +676,7 @@ const pushRaw = async (store, over) => {
   check('v0.9-C Phase 6 任务文件含 task 材料（id/标题/正文/备注/完成时间）',
     taskText.includes(t.id) && taskText.includes('给插件加水印')
     && taskText.includes('给 SVG 图加水印并导出 PNG') && taskText.includes('验收：输出可预览')
+    && taskText.includes('用 sharp 处理，验收通过') // done 时追加的完成备注
     && taskText.includes('完成于：') && taskText.includes(doneRes.doneAt));
   check('v0.9-C Phase 6 任务文件含相关记忆（同标签优先）',
     taskText.includes(memTagged.id) && taskText.includes(memOther.id)
