@@ -16,6 +16,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/), versioning follo
   resets after `memory_dream`.
 - Tests: reminder appears when due, disappears after a dream (51 assertions).
 
+### Branding
+- New mark: a chubby fish whose body is a memory core — three memory strata,
+  a small neural net, RAM-style belly pins, and a puzzle-piece dorsal fin for
+  "plugin". Deliberately not the DeepSeek whale.
+- `docs/logo.png` (with background), `docs/logo-transparent.png`,
+  `docs/banner.png` (1280×640 social preview), `icon.svg` (plugin icon),
+  regenerable with `python docs/make-art.py`.
+
 ## [0.6.0] — 2026-10-25
 
 ### Changed
