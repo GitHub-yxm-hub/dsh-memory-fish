@@ -1,0 +1,5 @@
+# 小肥鱼记忆（dsh-memory-fish）
+# 一行 insert：插件本体。宿主提供 peer 服务（@deepseek-ai/cordis、@deepseek-ai/dsh-tools）。
+- insert:
+    - id: memory-fish
+      name: dsh-memory-fish

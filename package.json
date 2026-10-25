@@ -1,0 +1,76 @@
+{
+  "name": "dsh-memory-fish",
+  "version": "0.6.0",
+  "description": "Context-budgeted local memory for DeepSeek Harness: fixed 600-token injection, three-stage sleep consolidation, spaced repetition, temporal validity. Zero dependencies, zero server.",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./client": "./client/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.mjs",
+    "lib/*.mjs",
+    "client/client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "README.en.md",
+    "DESIGN.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.19"
+  },
+  "scripts": {
+    "test": "node tests/smoke.mjs",
+    "check": "node --check index.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "memory",
+    "local-first",
+    "token-budget",
+    "spaced-repetition",
+    "sleep-consolidation"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YOUR_GITHUB/dsh-memory-fish.git"
+  },
+  "homepage": "https://github.com/YOUR_GITHUB/dsh-memory-fish#readme",
+  "bugs": {
+    "url": "https://github.com/YOUR_GITHUB/dsh-memory-fish/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.0",
+    "@deepseek-ai/dsh-tools": ">=0.0.1-rc.1"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  }
+}
