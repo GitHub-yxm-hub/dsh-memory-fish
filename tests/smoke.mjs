@@ -593,6 +593,202 @@ const dayOffset = (days) => localDay(new Date(Date.now() + days * 86400000));
     { tokens: estTokens(hot.text), budget: cfg.budgetTokens, l1: hot.l1Lines, taskTokens: hot.taskTokens });
 }
 
+// --- v0.9-C skill 类型 + dream Phase 6 + 轻量溯源（task/skill 排除出 dream 的合并/衰减/画像材料）---
+const rawEntry = (over = {}) => {
+  const now = new Date().toISOString();
+  return {
+    id: over.id, title: '占位', content: '占位正文。', kind: 'fact',
+    tags: [], importance: 3, salience: 5, pinned: false,
+    created: now, updated: now, validFrom: now, validTo: null, history: [], sources: [],
+    hits: 0, lastHit: null, status: 'active', supersedes: [], links: [],
+    chars: 0, tokens: 0, file: '',
+    stability: 10, lastReview: now, nextReview: new Date(Date.now() + 86400000).toISOString(), reviews: 0,
+    ...over,
+  };
+};
+const pushRaw = async (store, over) => {
+  const e = rawEntry(over);
+  await store.writeMemory(e, e.content);
+  store.entries.push(e);
+  return e;
+};
+{
+  // SWS：只合并 fact；skill/task 不参与
+  const { store, cfg } = await bootSnapStore({ injectionMode: 'live', skillExtraction: false, mentalModel: false, dreamReminder: false });
+  const f1 = await pushRaw(store, { id: 'c-sws-f1', title: '发布流程规范', content: '发布前先跑测试，再打包，最后推送版本标签。' });
+  const f2 = await pushRaw(store, { id: 'c-sws-f2', title: '发布流程规范', content: '发布前先跑测试，再打包，最后推送版本标签并记录。' });
+  const s1 = await pushRaw(store, { id: 'c-sws-s1', kind: 'skill', title: '技能甲：用 rg 搜索代码', content: '技能甲：用 rg 搜索代码比 grep 快。' });
+  const s2 = await pushRaw(store, { id: 'c-sws-s2', kind: 'skill', title: '技能甲：用 rg 搜索代码', content: '技能甲：用 rg 搜索代码比 grep 快很多。' });
+  const t1 = await pushRaw(store, { id: 'c-sws-t1', kind: 'task', taskStatus: 'open', dueAt: '', doneAt: null, priority: 3, note: '', title: '任务甲：升级 Node', content: '任务甲：升级 Node 到 v24。' });
+  const t2 = await pushRaw(store, { id: 'c-sws-t2', kind: 'task', taskStatus: 'open', dueAt: '', doneAt: null, priority: 3, note: '', title: '任务甲：升级 Node', content: '任务甲：升级 Node 到 v24 并验证。' });
+  const d = await buildDream(store, cfg, 1);
+  check('v0.9-C SWS 只合并 fact（skill/task 不参与）',
+    d.phases.sws.merged.length === 1
+    && [f1.id, f2.id].includes(d.phases.sws.merged[0].kept)
+    && [f1.id, f2.id].includes(d.phases.sws.merged[0].dropped)
+    && [s1, s2, t1, t2].every(e => store.byId(e.id).status === 'active'),
+    d.phases.sws.merged);
+}
+{
+  // SHY：只衰减 fact；skill/task 不参与
+  const { store, cfg } = await bootSnapStore({ injectionMode: 'live', skillExtraction: false, mentalModel: false, dreamReminder: false });
+  const old = new Date(Date.now() - 120 * 86400000).toISOString();
+  const oldNext = new Date(Date.now() - 100 * 86400000).toISOString();
+  const factOld = await pushRaw(store, { id: 'c-shy-fact', title: '很久以前的事实', content: '这是一条很久以前的事实记忆。', updated: old, created: old, stability: 3, nextReview: oldNext });
+  const skillOld = await pushRaw(store, { id: 'c-shy-skill', kind: 'skill', title: '很久以前的技能', content: '这是一条很久以前提炼的技能。', updated: old, created: old });
+  const taskOld = await pushRaw(store, { id: 'c-shy-task', kind: 'task', taskStatus: 'open', dueAt: '', doneAt: null, priority: 3, note: '', title: '很久以前的待办', content: '这是一条很久以前的待办任务。', updated: old, created: old });
+  const d = await buildDream(store, cfg, 1);
+  check('v0.9-C SHY 只衰减 fact（skill/task 不参与）',
+    d.phases.shy.demoted.some(x => x.id === factOld.id)
+    && !d.phases.shy.demoted.some(x => x.id === skillOld.id || x.id === taskOld.id)
+    && store.byId(skillOld.id).status === 'active' && store.byId(taskOld.id).status === 'active',
+    d.phases.shy.demoted);
+}
+{
+  // Phase 4：画像材料只保留 fact（排除 task/skill）
+  const { store, cfg } = await bootSnapStore({ injectionMode: 'live', skillExtraction: false, mentalModel: true, mentalModelEveryDays: 7, dreamReminder: false });
+  const f = await saveMemoryCore(store, cfg, { title: '用户偏好中文交流', content: '铁凝偏好中文交流，语气轻松。' });
+  const sk = await saveMemoryCore(store, cfg, { title: '不该进画像的技能', content: '技能不该进 L0 画像材料。', kind: 'skill' });
+  const tk = await taskCore(store, cfg, { action: 'add', title: '不该进画像的待办', content: '待办不该进 L0 画像材料。' });
+  const d = await buildDream(store, cfg, 1);
+  const mentalText = fs.readFileSync(d.mentalModel.taskFile, 'utf8');
+  check('v0.9-C Phase4 画像材料含 fact', d.mentalModel.due === true && mentalText.includes(f.id) && mentalText.includes('用户偏好中文交流'));
+  check('v0.9-C Phase4 画像材料排除 task/skill',
+    !mentalText.includes('不该进画像的技能') && !mentalText.includes('不该进画像的待办')
+    && !mentalText.includes(sk.id) && !mentalText.includes(tk.id));
+}
+{
+  // Phase 6：有已完成 task → 生成 skill 任务文件（在 dream 报告之前生成，报告引用路径）
+  const { store, cfg } = await bootSnapStore({ injectionMode: 'live', skillExtraction: true, mentalModel: false, dreamReminder: false });
+  const yesterday = dayOffset(-1);
+  await store.saveDreamReport(yesterday, '# 睡梦报告\n\n- 昨天复盘了发布流程。\n');
+  const t = await taskCore(store, cfg, { action: 'add', title: '给插件加水印', content: '给 SVG 图加水印并导出 PNG。', note: '验收：输出可预览' });
+  const doneRes = await taskCore(store, cfg, { action: 'done', id: t.id });
+  store.byId(t.id).tags = ['部署'];
+  const memTagged = await saveMemoryCore(store, cfg, { title: '水印处理统一用 sharp', content: '水印处理统一用 sharp，避免 canvas 原生依赖。', tags: ['部署'] });
+  const memOther = await saveMemoryCore(store, cfg, { title: '导出图片统一 PNG', content: '导出图片统一 PNG 300dpi。', tags: ['导出'] });
+  const d = await buildDream(store, cfg, 1);
+  const se = d.skillExtraction;
+  check('v0.9-C Phase 6 有已完成 task → enabled/due/taskFile/completedCount',
+    se.enabled === true && se.due === true && typeof se.taskFile === 'string'
+    && fs.existsSync(se.taskFile) && se.taskFile.endsWith('-skill-task.md') && se.completedCount === 1, se);
+  const taskText = fs.readFileSync(se.taskFile, 'utf8');
+  check('v0.9-C Phase 6 任务文件含 task 材料（id/标题/正文/备注/完成时间）',
+    taskText.includes(t.id) && taskText.includes('给插件加水印')
+    && taskText.includes('给 SVG 图加水印并导出 PNG') && taskText.includes('验收：输出可预览')
+    && taskText.includes('完成于：') && taskText.includes(doneRes.doneAt));
+  check('v0.9-C Phase 6 任务文件含相关记忆（同标签优先）',
+    taskText.includes(memTagged.id) && taskText.includes(memOther.id)
+    && taskText.includes('水印处理统一用 sharp')
+    && taskText.indexOf(memTagged.id) < taskText.indexOf(memOther.id));
+  check('v0.9-C Phase 6 任务文件含最近睡梦摘要', taskText.includes(`### ${yesterday}`) && taskText.includes('昨天复盘了发布流程'));
+  check('v0.9-C Phase 6 任务文件含给 subagent 的指令',
+    taskText.includes('技能提炼员') && taskText.includes('TITLE:') && taskText.includes('SKILL:')
+    && taskText.includes('TAGS:') && taskText.includes('SOURCES:') && taskText.includes("memory_save(kind='skill'")
+    && taskText.includes('不要调用任何工具'));
+  check('v0.9-C dream 报告含 Phase 6 节并引用任务文件',
+    d.report.includes('## 🧠 Phase 6 · Skill 提炼') && d.report.includes('技能提炼：是')
+    && d.report.includes(se.taskFile) && fs.existsSync(d.file));
+  check('v0.9-C 生成任务文件后 lastSkillExtract 更新并持久化',
+    typeof store.stats.lastSkillExtract === 'string'
+    && JSON.parse(fs.readFileSync(store.statsFile, 'utf8')).lastSkillExtract === store.stats.lastSkillExtract);
+  const lastExtract = store.stats.lastSkillExtract;
+  const d2 = await buildDream(store, cfg, 1);
+  check('v0.9-C 再次做梦不重复生成（due:false/taskFile:null/报告否）',
+    d2.skillExtraction.due === false && d2.skillExtraction.taskFile === null && d2.skillExtraction.completedCount === 0
+    && d2.report.includes('技能提炼：否') && store.stats.lastSkillExtract === lastExtract);
+}
+{
+  // >10 个已完成 task：任务文件材料 ≤10 条，completedCount 为总完成数
+  const { store, cfg } = await bootSnapStore({ injectionMode: 'live', skillExtraction: true, mentalModel: false, dreamReminder: false });
+  for (let i = 0; i < 12; i++) {
+    const t = await taskCore(store, cfg, { action: 'add', title: `批量完成${i}号任务`, content: `批量完成测试任务 ${i}，用于验证材料上限。` });
+    await taskCore(store, cfg, { action: 'done', id: t.id });
+  }
+  const d = await buildDream(store, cfg, 1);
+  const text = fs.readFileSync(d.skillExtraction.taskFile, 'utf8');
+  const sec = text.slice(text.indexOf('## 1.'), text.indexOf('## 2.'));
+  const materialCount = (sec.match(/完成于：/g) || []).length;
+  check('v0.9-C Phase 6 材料最多 10 个 task（completedCount 为总数）',
+    d.skillExtraction.completedCount === 12 && materialCount === 10,
+    { count: d.skillExtraction.completedCount, materialCount });
+}
+{
+  // Phase 6 关闭：enabled:false、不生成、报告无 Phase 6 节
+  const { store, cfg } = await bootSnapStore({ injectionMode: 'live', skillExtraction: false, mentalModel: false, dreamReminder: false });
+  const t = await taskCore(store, cfg, { action: 'add', title: '禁用提炼测试任务', content: '完成后也不该生成 skill 任务。' });
+  await taskCore(store, cfg, { action: 'done', id: t.id });
+  const d = await buildDream(store, cfg, 1);
+  check('v0.9-C skillExtraction:false → enabled:false 且不生成/不显示 Phase 6',
+    d.skillExtraction.enabled === false && d.skillExtraction.due === false && d.skillExtraction.taskFile === null
+    && !d.report.includes('Phase 6') && !d.report.includes('Skill 提炼')
+    && !fs.readdirSync(store.dreamDir).some(f => f.includes('-skill-task')));
+}
+{
+  // 无已完成 task → due:false、taskFile:null
+  const { store, cfg } = await bootSnapStore({ injectionMode: 'live', skillExtraction: true, mentalModel: false, dreamReminder: false });
+  const d = await buildDream(store, cfg, 1);
+  check('v0.9-C 无已完成 task → due:false taskFile:null',
+    d.skillExtraction.enabled === true && d.skillExtraction.due === false
+    && d.skillExtraction.taskFile === null && d.skillExtraction.completedCount === 0
+    && d.report.includes('技能提炼：否'));
+}
+{
+  // 已完成 task 需 status==='active'
+  const { store, cfg } = await bootSnapStore({ injectionMode: 'live', skillExtraction: true, mentalModel: false, dreamReminder: false });
+  const t = await taskCore(store, cfg, { action: 'add', title: '归档任务不算', content: 'status 非 active 不算已完成的材料。' });
+  await taskCore(store, cfg, { action: 'done', id: t.id });
+  store.byId(t.id).status = 'archived';
+  const d = await buildDream(store, cfg, 1);
+  check('v0.9-C 非 active 的已完成 task 不计入 Phase 6', d.skillExtraction.due === false && d.skillExtraction.completedCount === 0);
+}
+{
+  // doneAt 不晚于 lastSkillExtract → 不重复生成
+  const { store, cfg } = await bootSnapStore({ injectionMode: 'live', skillExtraction: true, mentalModel: false, dreamReminder: false });
+  const t = await taskCore(store, cfg, { action: 'add', title: '已完成但已提炼过', content: '上次提炼之后没有新完成的任务。' });
+  await taskCore(store, cfg, { action: 'done', id: t.id });
+  store.stats.lastSkillExtract = new Date().toISOString();
+  const d = await buildDream(store, cfg, 1);
+  check('v0.9-C doneAt 不晚于 lastSkillExtract → 不重复生成',
+    d.skillExtraction.due === false && d.skillExtraction.taskFile === null);
+}
+{
+  // sources 溯源 + kind 不降级
+  const { store, cfg, dir } = await bootSnapStore({ injectionMode: 'live', noopThreshold: 2, skillExtraction: false, mentalModel: false, dreamReminder: false });
+  const src1 = await taskCore(store, cfg, { action: 'add', title: '来源任务一', content: '给 sources 测试提供来源一。' });
+  const src2 = await taskCore(store, cfg, { action: 'add', title: '来源任务二', content: '给 sources 测试提供来源二。' });
+  const sk = await saveMemoryCore(store, cfg, { title: '部署技能：先跑测试', content: '部署前先跑冒烟测试，确认 ALL PASS 再发布。', kind: 'skill', sources: [src1.id, src2.id, 'mem-x'] });
+  check('v0.9-C sources 新条目落库', sk.ok === true && Array.isArray(sk.sources) && sk.sources.length === 3 && sk.sources[0] === src1.id, sk.sources);
+  const fmText = fs.readFileSync(store.byId(sk.id).file, 'utf8');
+  check('v0.9-C frontmatter sources 逗号风格', fmText.includes(`sources: ${src1.id}, ${src2.id}, mem-x`), fmText.split('\n').filter(l => l.startsWith('sources:')));
+  const reopened = new Store(dir);
+  await reopened.init();
+  check('v0.9-C 重启后 sources 解析往返',
+    Array.isArray(reopened.byId(sk.id).sources) && reopened.byId(sk.id).sources.length === 3 && reopened.byId(sk.id).sources[2] === 'mem-x');
+  const sk2 = await saveMemoryCore(store, cfg, { title: '部署技能：先跑测试', content: '部署前先跑冒烟测试，确认 ALL PASS 再发布。', kind: 'skill', sources: ['m1', 'm2', 'm3', 'm4', 'm5', 'm6'] });
+  check('v0.9-C 更新分支 sources 取并集并保留最近 5 个',
+    sk2.updated === true && sk2.sources.length === 5 && sk2.sources[4] === 'm6' && !sk2.sources.includes(src1.id), sk2.sources);
+  const downgrade = await saveMemoryCore(store, cfg, { title: '部署技能：先跑测试', content: '部署前先跑冒烟测试，确认 ALL PASS 再发布。', kind: 'fact' });
+  check('v0.9-C kind 不可降级：skill 不被同主题 fact 覆盖',
+    downgrade.updated === true && store.byId(sk.id).kind === 'skill' && downgrade.kind === 'skill', { kind: store.byId(sk.id).kind });
+  const f = await saveMemoryCore(store, cfg, { title: '面板端口固定 60398', content: 'DSH 面板固定端口 60398。' });
+  const up = await saveMemoryCore(store, cfg, { title: '面板端口固定 60398', content: 'DSH 面板固定端口 60398。', kind: 'skill' });
+  check('v0.9-C fact→skill 允许升级', up.updated === true && store.byId(f.id).kind === 'skill', up.kind);
+}
+{
+  // skill 不进 L1 热索引 / 不进待办块；fact/task 各就各位
+  const { store, cfg } = await bootSnapStore({ injectionMode: 'live', skillExtraction: false, mentalModel: false, dreamReminder: false });
+  await saveMemoryCore(store, cfg, { title: '普通事实记忆条目', content: '这是一条普通事实。' });
+  await saveMemoryCore(store, cfg, { title: '提炼出来的技能条目', content: '这是一条技能。', kind: 'skill', sources: ['t-source-1'] });
+  await taskCore(store, cfg, { action: 'add', title: '待办任务条目', content: '这是一条待办。' });
+  const inj = buildInjection(store, cfg);
+  check('v0.9-C skill 不进 L1 热索引也不进待办块',
+    !inj.text.includes('提炼出来的技能条目')
+    && !sectionOf(inj.text, '### 热索引').includes('技能条目') && !sectionOf(inj.text, '### 待办').includes('技能条目'));
+  check('v0.9-C fact/task 各就各位',
+    sectionOf(inj.text, '### 热索引').includes('普通事实记忆条目') && sectionOf(inj.text, '### 待办').includes('待办任务条目'));
+}
+
 // --- 整理 / 置顶 / 遗忘 ---
 const cons = await call('memory_consolidate', { dryRun: false });
 check('整理报告可序列化', typeof cons.mergedCount === 'number', cons);
@@ -663,6 +859,39 @@ check('注入预算 ≤ 600 tokens', stats2.injectedL1Tokens <= 600, stats2.inje
   await actionRoute.handler(reqDrop, res4);
   const dropRes = JSON.parse(res4.body);
   check('v0.9-B 面板 taskDrop 生效', dropRes.ok === true && dropRes.taskStatus === 'dropped', dropRes);
+}
+
+// --- v0.9-C sources / skill / Phase 6（主实例：工具链 + dream 全链路）---
+{
+  const srcTask = await call('memory_task', { action: 'add', title: '溯源来源任务', content: '给 sources 测试提供来源 task id。' });
+  const skillC = await call('memory_save', { title: 'v0.9-C 溯源技能', content: '用 sources 字段把技能指回来源任务 id，最多五个。', kind: 'skill', sources: [srcTask.id, 'manual-id'] });
+  check('v0.9-C memory_save 落库 sources',
+    skillC.ok === true && Array.isArray(skillC.sources) && skillC.sources.length === 2 && skillC.sources[0] === srcTask.id, skillC);
+  const rd = await call('memory_read', { id: skillC.id });
+  check('v0.9-C memory_read 返回 sources/kind', Array.isArray(rd.sources) && rd.sources.includes(srcTask.id) && rd.kind === 'skill', rd.sources);
+  const se = await call('memory_search', { query: '溯源技能' });
+  check('v0.9-C memory_search 返回 sources',
+    se.matches.some(m => m.id === skillC.id && Array.isArray(m.sources) && m.sources.includes(srcTask.id)), se.matches);
+  const li = await call('memory_list', { limit: 50, kind: 'skill' });
+  check('v0.9-C memory_list 返回 sources', li.entries.some(e => e.id === skillC.id && Array.isArray(e.sources)), li.entries);
+  const stC = await call('memory_stats', {});
+  check('v0.9-C stats 带 skill 观测',
+    stC.kindCounts.skill >= 2 && stC.skillExtraction === true && stC.lastSkillExtract === null,
+    { counts: stC.kindCounts, last: stC.lastSkillExtract });
+  const dreamC = await call('memory_dream', { days: 1 });
+  check('v0.9-C memory_dream 返回 skillExtraction 并生成任务文件',
+    dreamC.skillExtraction && dreamC.skillExtraction.enabled === true && dreamC.skillExtraction.due === true
+    && typeof dreamC.skillExtraction.taskFile === 'string' && fs.existsSync(dreamC.skillExtraction.taskFile)
+    && dreamC.skillExtraction.completedCount >= 1, dreamC.skillExtraction);
+  check('v0.9-C dream 报告含 Phase 6 与任务文件路径',
+    dreamC.report.includes('## 🧠 Phase 6 · Skill 提炼') && dreamC.report.includes('技能提炼：是')
+    && dreamC.report.includes(dreamC.skillExtraction.taskFile), dreamC.report.slice(-400));
+  const stC2 = await call('memory_stats', {});
+  check('v0.9-C lastSkillExtract 在主实例更新并持久化',
+    typeof stC2.lastSkillExtract === 'string'
+    && JSON.parse(fs.readFileSync(path.join(memDir, 'stats.json'), 'utf8')).lastSkillExtract === stC2.lastSkillExtract);
+  const dreamC2 = await call('memory_dream', { days: 1 });
+  check('v0.9-C 主实例再次做梦不重复生成', dreamC2.skillExtraction.due === false && dreamC2.skillExtraction.taskFile === null);
 }
 
 console.log('\n--- injected block ---');
