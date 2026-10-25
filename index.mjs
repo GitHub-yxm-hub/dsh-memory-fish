@@ -53,13 +53,25 @@ export function apply(ctx, config = {}) {
 
   const toolImpl = {};
 
-  // ---- 自动捕获：对话落 journal（L3 原始层，永不注入，供做梦回顾） ----
+  // ---- 自动捕获 + v0.9 会话纪元（注入快照失效） ----
   try {
-    if (cfg.autoCapture && typeof ctx.on === 'function') {
+    if (typeof ctx.on === 'function') {
+      let lastSessionId = '';
       ctx.on('session/event', (session, event) => {
         try {
           if (!event || typeof event !== 'object') return;
-          if (cfg.skipSubagentSessions && session?.header?.origin === 'subagent') return;
+          const isSubagent = session?.header?.origin === 'subagent';
+          // v0.9：会话 id 变化且模式为 session 时，让 L1 快照失效（每个会话最多一次）。
+          // 子代理会话不参与主会话的刷新纪元，否则会把热索引来回刷新。
+          if (!isSubagent) {
+            const sid = session?.id !== undefined && session?.id !== null ? String(session.id) : '';
+            if (cfg.injectionMode === 'session' && sid && sid !== lastSessionId) {
+              lastSessionId = sid;
+              store.invalidateInjection('session').catch(() => {});
+            }
+          }
+          if (!cfg.autoCapture) return;
+          if (cfg.skipSubagentSessions && isSubagent) return;
           const types = ['user/message', 'assistant/message'];
           if (!types.includes(event.type)) return;
           const message = event.type === 'user/message' ? event.data : event.data?.message;
@@ -77,7 +89,7 @@ export function apply(ctx, config = {}) {
             text: redactSecrets(text).slice(0, cfg.captureMaxChars),
           }).catch(() => {});
           store.stats.captured = (store.stats.captured || 0) + 1;
-        } catch { /* 捕获失败绝不影响会话 */ }
+        } catch { /* 捕获/失效失败绝不影响会话 */ }
       });
     }
   } catch { /* 宿主没有事件总线 */ }

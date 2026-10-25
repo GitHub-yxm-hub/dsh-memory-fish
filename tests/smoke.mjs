@@ -38,7 +38,8 @@ const ctx = {
   },
 };
 
-apply(ctx, { dir: memDir, budgetTokens: 600, profileTokens: 200, dreamAfterHours: 0 });
+// v0.9：主实例用 live 模式跑既有断言（注入块每轮实时重建，旧行为不变）
+apply(ctx, { dir: memDir, budgetTokens: 600, profileTokens: 200, dreamAfterHours: 0, injectionMode: 'live' });
 await new Promise(r => setTimeout(r, 300));
 
 const call = async (n, args) => {
@@ -182,7 +183,7 @@ const { resolveConfig } = await import(pathToFileURL(path.join(root, 'lib/config
 const { Store } = await import(pathToFileURL(path.join(root, 'lib/store.mjs')).href);
 const { buildDream } = await import(pathToFileURL(path.join(root, 'lib/dream.mjs')).href);
 const { saveMemoryCore } = await import(pathToFileURL(path.join(root, 'lib/core.mjs')).href);
-const { estTokens } = await import(pathToFileURL(path.join(root, 'lib/util.mjs')).href);
+const { estTokens, localDay } = await import(pathToFileURL(path.join(root, 'lib/util.mjs')).href);
 const { buildInjection } = await import(pathToFileURL(path.join(root, 'lib/inject.mjs')).href);
 
 // 主实例：归档 / 硬截断 / 重写时间
@@ -240,7 +241,9 @@ const bootFishStore = async (overrides = {}) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fish-inj-'));
   const st = new Store(dir);
   await st.init();
-  const cfgInj = resolveConfig({ dir, dreamReminder: true, dreamAfterHours: 24 });
+  // v0.9：这组断言测的是 v0.8.1 的「文案形状」（不随计数/小时变化），
+  // 注入快照冻结会改变阈值行行为，因此显式用 live 模式保持原语义。
+  const cfgInj = resolveConfig({ dir, dreamReminder: true, dreamAfterHours: 24, injectionMode: 'live' });
   st.stats.lastDream = new Date(Date.now() - 30 * 3600000).toISOString();
   st.stats.capturedSinceDream = 3;
   const r1 = buildInjection(st, cfgInj).text;
@@ -254,6 +257,168 @@ const bootFishStore = async (overrides = {}) => {
   check('v0.8.1 热索引不再逐条 ⏰（防搜索后抖动）', !r3.split('\n').some(l => l.startsWith('- ⏰')), r3.split('\n').filter(l => l.includes('到期')));
   check('v0.8.1 到期用阈值文案', r3.includes('有记忆到期该复习'), r3.split('\n').filter(l => l.includes('到期')));
   check('v0.8.1 同状态两次渲染字节一致', buildInjection(st, cfgInj).text === r3);
+}
+
+// --- v0.9 缓存感知注入（L1 快照冻结 + 重建观测 + 硬预算）---
+const bootSnapStore = async (overrides = {}) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fish-snap-'));
+  const store = new Store(dir);
+  await store.init();
+  const cfg = resolveConfig({ dir, ...overrides });
+  return { store, cfg, dir };
+};
+const buildText = (store, cfg, now) => buildInjection(store, cfg, now).text;
+const waitInjectionWrite = async (store) => { try { await store.injectionWrite; } catch { /* 落盘失败不影响断言 */ } };
+
+check('v0.9 默认 injectionMode=session', resolveConfig({ dir: os.tmpdir() }).injectionMode === 'session');
+check('v0.9 injectionMode 白名单校验（非法回落 session）',
+  resolveConfig({ injectionMode: 'bogus' }).injectionMode === 'session'
+  && resolveConfig({ injectionMode: 'daily' }).injectionMode === 'daily'
+  && resolveConfig({ injectionMode: 'live' }).injectionMode === 'live');
+
+{
+  // b) session 模式：同会话内冻结，invalidate 后重建
+  const { store, cfg } = await bootSnapStore();
+  await saveMemoryCore(store, cfg, { title: '会话冻结测试 A', content: '会话内冻结测试的第一条记忆内容。' });
+  const t1 = buildText(store, cfg);
+  await saveMemoryCore(store, cfg, { title: '会话冻结测试 B', content: '会话内冻结测试的第二条记忆内容。' });
+  const t2 = buildText(store, cfg);
+  check('v0.9 session：同会话内保存新记忆不改变注入块', t1 === t2 && t1.includes('会话冻结测试 A') && !t2.includes('会话冻结测试 B'));
+  const rbBefore = store.stats.injectionRebuilds;
+  await store.invalidateInjection('session');
+  const t3 = buildText(store, cfg);
+  check('v0.9 session：invalidate 后新记忆出现且重建 +1',
+    t3.includes('会话冻结测试 B') && store.stats.injectionRebuilds === rbBefore + 1);
+}
+
+{
+  // c) daily 模式：同日冻结，跨日重建
+  const { store, cfg } = await bootSnapStore({ injectionMode: 'daily' });
+  const now = Date.now();
+  await saveMemoryCore(store, cfg, { title: '日界测试记忆 A', content: '每日刷新模式的跨日测试内容甲方。' });
+  const t1 = buildText(store, cfg, now);
+  await saveMemoryCore(store, cfg, { title: '日界测试记忆 B', content: '每日刷新模式的跨日测试内容乙方。' });
+  const t2 = buildText(store, cfg, now);
+  const t3 = buildText(store, cfg, now + 86400000);
+  check('v0.9 daily：同日保存新记忆不改变注入块', t1 === t2 && !t2.includes('日界测试记忆 B'));
+  check('v0.9 daily：跨日后重建并出现新记忆（reason=day）',
+    t3.includes('日界测试记忆 B') && t3 !== t2 && store.stats.lastInjectionRebuild.reason === 'day');
+}
+
+{
+  // d) live 模式：不缓存、不计数
+  const { store, cfg } = await bootSnapStore({ injectionMode: 'live' });
+  await saveMemoryCore(store, cfg, { title: '实时模式记忆 A', content: '实时模式的第一条记忆内容。' });
+  const t1 = buildText(store, cfg);
+  await saveMemoryCore(store, cfg, { title: '实时模式记忆 B', content: '实时模式的第二条记忆内容。' });
+  const t2 = buildText(store, cfg);
+  check('v0.9 live：保存后立即出现在注入块', t2.includes('实时模式记忆 B') && t2 !== t1);
+  check('v0.9 live：不写缓存文件、不计重建', (store.stats.injectionRebuilds || 0) === 0 && !fs.existsSync(path.join(store.dir, 'injection-cache.json')));
+}
+
+{
+  // e) 重建观测：计数、原因、缓存文件
+  const { store, cfg, dir } = await bootSnapStore();
+  buildText(store, cfg); // 首次构建 reason=init
+  await waitInjectionWrite(store);
+  check('v0.9 首次构建计入重建（reason=init）',
+    store.stats.injectionRebuilds === 1 && store.stats.lastInjectionRebuild.reason === 'init');
+  await store.invalidateInjection('dream');
+  buildText(store, cfg);
+  await waitInjectionWrite(store);
+  const cacheFile = path.join(dir, 'injection-cache.json');
+  let cache = null;
+  try { cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8')); } catch { /* 下面断言会暴露 */ }
+  check('v0.9 重建计数递增且原因/时间/日期记录',
+    store.stats.injectionRebuilds === 2
+    && store.stats.lastInjectionRebuild.reason === 'dream'
+    && typeof store.stats.lastInjectionRebuild.at === 'string'
+    && store.stats.lastInjectionRebuild.day === localDay()
+    && ['init', 'day', 'session', 'dream', 'consolidate'].includes(store.stats.lastInjectionRebuild.reason));
+  check('v0.9 注入快照落盘结构正确',
+    fs.existsSync(cacheFile) && !!cache && cache.day === localDay() && Array.isArray(cache.lines)
+    && typeof cache.due === 'boolean' && cache.reason === 'dream' && fs.readFileSync(cacheFile, 'utf8').includes('builtAt'));
+  // 观测计数不能被 mutating 工具的 withLock→load() 回退
+  await saveMemoryCore(store, cfg, { title: '观测计数记忆', content: '用于验证重建计数不会被工具内的 stats 重读冲掉。' });
+  check('v0.9 工具调用后重建观测不回退', store.stats.injectionRebuilds === 2 && store.stats.lastInjectionRebuild.reason === 'dream');
+}
+
+{
+  // f) 重启后稳定：新 Store 指向同目录 → 命中缓存，输出一致、不重建
+  const { store, cfg, dir } = await bootSnapStore();
+  await saveMemoryCore(store, cfg, { title: '重启缓存记忆', content: '用于验证重启后注入快照命中缓存的内容。' });
+  const before = buildText(store, cfg);
+  await waitInjectionWrite(store);
+  const reopened = new Store(dir);
+  await reopened.init();
+  const rebuilds0 = reopened.stats.injectionRebuilds || 0;
+  const after = buildText(reopened, cfg);
+  await waitInjectionWrite(reopened);
+  check('v0.9 重启后注入块与重启前一致（命中缓存）', after === before, { beforeTail: before.slice(-100), afterTail: after.slice(-100) });
+  check('v0.9 重启命中缓存不增加重建计数', (reopened.stats.injectionRebuilds || 0) === rebuilds0);
+}
+
+{
+  // g) 硬预算：30 条 30-40 字标题 + 长画像，整块 ≤ 600 tokens
+  const { store, cfg } = await bootSnapStore();
+  const longProfile = '铁凝：喜欢写代码、折腾电脑、关注新技术（AI / 开发工具 / 编程前沿）。中文交流，语气轻松。'.repeat(30);
+  fs.writeFileSync(store.profileFile, `# 小肥鱼记忆 · L0 画像\n\n${longProfile}\n`, 'utf8');
+  const words = ['缓存', '重建', '预算', '快照', '日界', '阈值', '画像', '检索', '归档', '复习', '显著', '熬夜', '磁盘', '镜像', '线程', '噪音', '糖分', '拉面', '键盘', '屏幕', '像素', '网速', '电池', '咖啡', '内存', '风扇', '固态', '路由', '行号', '标点'];
+  const now = new Date().toISOString();
+  const nextReview = new Date(Date.now() + 86400000).toISOString();
+  for (let i = 0; i < 30; i++) {
+    const word = words[i];
+    const entry = {
+      id: `budget-test-${i}`,
+      title: `压力测试${i}号记忆${word}的标题需要三十到四十个汉字长度以便触发注入预算裁剪`,
+      content: `${word}压力测试正文，编号${i}，用于验证注入整块硬预算不会越界。`,
+      tags: ['压力'], importance: 3, salience: 5, pinned: false,
+      created: now, updated: now, validFrom: now, validTo: null, history: [],
+      hits: 0, lastHit: null, status: 'active', supersedes: [], links: [],
+      chars: 0, tokens: 0, file: '',
+      stability: 10, lastReview: now, nextReview, reviews: 0,
+    };
+    await store.writeMemory(entry, entry.content);
+    store.entries.push(entry);
+  }
+  await store.saveIndex();
+  const hot = buildInjection(store, cfg);
+  const total = estTokens(hot.text);
+  check('v0.9 硬预算：30 条长标题 + 长画像整块 ≤ 600 tokens', total <= 600, { tokens: total, l1: hot.l1Lines, cold: hot.cold });
+  check('v0.9 硬预算：从 L1 末尾裁剪且保留画像/规则行',
+    hot.l1Lines > 0 && hot.l1Lines < 12 && hot.text.includes('### 画像') && hot.text.includes('> 规则：'), { l1: hot.l1Lines, cold: hot.cold });
+}
+
+{
+  // 入口层：session/event 检测新会话 → session 模式失效（子代理/同会话后续消息不重复失效）
+  const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'fish-epoch-'));
+  const tools2 = {};
+  const listeners2 = [];
+  let inj2 = () => '';
+  const ctx2 = {
+    systemPrompt: { getSectionOrder: () => 42, section(c) { inj2 = c.text; } },
+    tools: { register(def) { tools2[def.name] = def; } },
+    on(event, fn) { listeners2.push({ event, fn }); },
+    inject(deps, fn) { if (deps.includes('webServer')) fn({ webServer: { register() {} } }); },
+  };
+  apply(ctx2, { dir: dir2, dreamReminder: false, injectionMode: 'session' });
+  await new Promise(r => setTimeout(r, 300)); // 等 init 完成
+  const emit2 = (s, e) => listeners2.filter(l => l.event === 'session/event').forEach(l => l.fn(s, e));
+  const call2 = (n, args) => tools2[n].execute(args ?? {}, { signal: { aborted: false } });
+  inj2(); // 首次快照（空索引）
+  await call2('memory_save', { title: '纪元前记忆', content: '会话纪元测试：会话开始前保存的记忆。' });
+  emit2({ id: 'sess-x', header: {} }, { type: 'user/message', data: { role: 'user', content: [{ type: 'text', text: '第一个会话开始' }] } });
+  const tA = inj2();
+  check('v0.9 入口：新会话触发 session 失效（快照重建）', tA.includes('纪元前记忆'), tA.slice(-160));
+  await call2('memory_save', { title: '会话内记忆', content: '会话纪元测试：同一会话内保存的记忆。' });
+  const tA2 = inj2();
+  check('v0.9 入口：同一会话内保存不刷新快照', !tA2.includes('会话内记忆') && tA2 === tA);
+  emit2({ id: 'sess-x', header: {} }, { type: 'user/message', data: { role: 'user', content: [{ type: 'text', text: '同一会话再说一句' }] } });
+  const tA3 = inj2();
+  check('v0.9 入口：同会话后续事件不重复失效', !tA3.includes('会话内记忆') && tA3 === tA);
+  emit2({ id: 'sess-y', header: {} }, { type: 'user/message', data: { role: 'user', content: [{ type: 'text', text: '第二个会话开始' }] } });
+  const tB = inj2();
+  check('v0.9 入口：换会话后快照重建并出现会话内记忆', tB.includes('会话内记忆') && tB !== tA);
 }
 
 // --- 整理 / 置顶 / 遗忘 ---
