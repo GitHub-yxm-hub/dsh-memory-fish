@@ -48,7 +48,7 @@
 
 ### 可视化面板
 宿主 webServer 上的本地页面：`/memory-fish/panel`
-- 注入 token 预算条、活跃/归档/置顶/今日对话/候选线索卡片（v0.9 起还有待办卡与注入重建观测）
+- 注入 token 预算条（随 `budgetTokens` 配置）、活跃/归档/置顶/今日对话/候选线索卡片（v0.9 起还有待办卡与注入重建观测）
 - 画像编辑、记忆搜索、置顶/遗忘
 - 一键「现在做梦」「整理记忆」、查看最近睡梦报告
 - v0.9-B 起独立面板有「待办（open task）」区块，可完成 / 丢弃
@@ -138,10 +138,10 @@ system prompt 是每个请求的最前缀。它每变一个字节，服务商的
 | `live` | 每次注入实时重建（= 0.8 的行为） | 测试、调试、短会话 |
 
 - 快照落盘在 `<dir>/injection-cache.json`，重启后可复用；即便因新会话事件触发一次重建，渲染出的文本也保持不变，前缀缓存仍然命中
-- 失效原因可见：`init` / `session` / `day` / `dream` / `consolidate`
+- 失效原因可见：`init` / `session` / `day` / `dream` / `consolidate`；非 `live` 模式跨本地日也会额外重建一次（`reason=day`）
 - 观测：`memory_stats` 的 `injectionMode` / `injectionRebuilds` / `lastInjectionRebuild{at,reason,day}` / `injectionCacheDay`；面板显示重建次数与最近原因
 - 冻结范围是 **L1 热索引行 + 「有记忆到期」阈值**；L0 画像和 C1 提醒仍实时（画像改动立即生效；C1 文案是日粒度、不含计数，只在事件/日界/跨过欠梦阈值时变化）
-- 整块硬预算守卫：`estTokens(注入块) ≤ budgetTokens`，超出从 L1 末尾逐行裁剪
+- 整块硬预算守卫：`estTokens(注入块) ≤ budgetTokens`，超出从 L1 末尾逐行裁剪。**caveat**：极端配置（`profileTokens` 接近 `budgetTokens`，如 550/600）时固定文案开销仍可能略超，建议 `profileTokens ≤ budgetTokens − 150`（默认 600/200 实测成立）
 
 ### v0.9-B：记忆类型与待办
 
@@ -158,7 +158,7 @@ system prompt 是每个请求的最前缀。它每变一个字节，服务商的
 | action | 作用 |
 |---|---|
 | `add` | 建任务：`title` / `content` / `dueAt`（`YYYY-MM-DD` 本地日）/ `priority`（1–5，默认 3）/ `note`；同主题 open 任务相似度 ≥0.75 会原地合并更新 |
-| `done` | 标记完成（只能对 open 操作），记录 `doneAt` |
+| `done` | 标记完成（只能对 open 操作），记录 `doneAt`；可附 `note`，追加到任务备注（`旧 \| 新`），会成为 Phase 6 技能提炼材料 |
 | `drop` | 丢弃（只能对 open 操作） |
 | `list` | 按 逾期 → `dueAt` → `priority` 排序，附 `remaining`（剩余 open 摘要） |
 
@@ -194,12 +194,12 @@ system prompt 是每个请求的最前缀。它每变一个字节，服务商的
 
 **skill 类型**：`memory_save({ kind: 'skill' })` 落库。skill 不进热索引、不进待办块，也不参与 dream 的 SWS 合并 / SHY 衰减和 `memory_consolidate` 的合并归档——它是提炼产物，去留由显式操作决定。同主题更新时 **kind 不降级**：skill 不会被 fact 覆盖，fact → skill 可以升级。
 
-**sources 轻量溯源**：`memory_save` 新增可选 `sources`（task / memory id 数组，自动去重，最多保留 5 个）；更新已有条目时与旧值取并集、保留最近 5 个。落进 frontmatter `sources:`，`memory_read` / `memory_search` / `memory_list` 都会返回。它只是"这条记忆从哪来"的指针，不做图遍历。
+**sources 轻量溯源**：`memory_save` 新增可选 `sources`（task / memory id 数组，自动去重，最多保留 5 个）；更新已有条目时与旧值取并集、保留最近 5 个。落进 frontmatter `sources:`，`memory_read` / `memory_search` / `memory_list` 都会返回。它只是"这条记忆从哪来"的指针，不做图遍历。`sources` 里的疑似密钥值会被过滤；完全重复（NOOP）不写正文，但新 `sources` 仍会合并进旧条目（溯源不丢）。
 
 **dream Phase 6 · Skill 提炼**：`memory_dream` 检查「自上次提炼（`stats.lastSkillExtract`）之后新完成的 task」（只看 `status=active` 的 done task）：
 
 - **有** → 生成 `dream/YYYY-MM-DD-skill-task.md`，材料包括：
-  - 最近完成的任务 ≤10 条（id / 标题 / 内容 / 备注 / 完成时间）
+  - 最近完成的任务 ≤10 条（id / 标题 / 内容 / 备注 / 完成时间；备注 = `add` 的 note + `done` 追加的完成备注）
   - 相关活跃 fact 记忆 ≤15 条（任务标签共现优先，其次最近更新）
   - 最近 3 天睡梦摘要
   - 给 subagent 的提炼指令（提炼 1–3 条，`TITLE:` / `SKILL:` / `TAGS:` / `SOURCES:` 格式，≤200 tokens/条）
@@ -220,7 +220,7 @@ system prompt 是每个请求的最前缀。它每变一个字节，服务商的
 | `memory_search` | 本地关键词检索（含归档，可选）；结果带 `kind` / `taskStatus` / `dueAt` / `sources` |
 | `memory_read` | 读全文（>4000 字符截断）；带 `kind` / `sources`；task 不触发复习加固 |
 | `memory_list` | 最近记忆；`kind` 可按 fact / skill / task 过滤；带 `sources` |
-| `memory_task` | 待办：add / done / drop / list（v0.9-B） |
+| `memory_task` | 待办：add / done / drop / list；`done` 可附完成备注（进入 Phase 6 材料） |
 | `memory_pin` | 置顶/取消（置顶不参与衰减） |
 | `memory_forget` | 软删除 + 墓碑 |
 | `memory_profile_save` | 写 L0 画像（超长硬截断、拒密钥，记录重写时间） |
@@ -292,19 +292,20 @@ client/client.js 设置页面板（浏览器半）
 ## 测试
 
 ```bash
-npm test   # 164 项断言：捕获、脱敏、保存/去重/NOOP、检索、asOf 历史、
+npm test   # 166 项断言：捕获、脱敏、保存/去重/NOOP、检索、asOf 历史、
            # 睡眠三阶段 + Phase 4 画像重写 + Phase 6 技能提炼（到期判定/任务文件/
            # 材料上限/lastSkillExtract/关闭）、skill 类型与 kind 不降级、sources 溯源
-           # 往返与并集、注入快照三模式（session/daily/live、重启复用、重建原因与计数）、
+           # 往返/并集/NOOP 合并/密钥过滤、note 密钥拦截、注入快照三模式
+           # （session/daily/live、跨日重建、重启复用、重建原因与计数）、
            # 硬预算压力、kind/待办生命周期与注入、预算整合、注入块字节稳定（缓存友好）、
-           # 面板路由/待办按钮、锁释放
+           # 面板路由/预算随配置/待办按钮、锁释放
 ```
 
 CI 在 Linux / Windows × Node 22 / 24 上跑。
 
 ## 安全
 
-本地优先、无网络。journal 落盘前会脱敏密钥；HTTP 面板仅限 localhost 且有同源校验，但**没有鉴权**——请只在可信机器上运行。详见 [SECURITY.md](./SECURITY.md)。
+本地优先、无网络。journal 落盘前会脱敏密钥；`memory_task` 的备注（`add` / `done` 的 `note`）命中密钥检测会直接拒绝（`secret_refused`），`memory_save` 的 `sources` 中疑似密钥值会被过滤。HTTP 面板仅限 localhost 且有同源校验，但**没有鉴权**——请只在可信机器上运行。详见 [SECURITY.md](./SECURITY.md)。
 
 ## 设计
 

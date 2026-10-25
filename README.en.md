@@ -38,7 +38,7 @@ dsh-memory-fish splits *storage* from *injection*:
 - **Temporal validity**: `validFrom`/`validTo` + version history; `memory_search({ asOf: "2026-09-15" })` answers "what did we use last month".
 - **Auto-capture** of conversations into a raw journal (never injected, secrets redacted, 30-day retention).
 - **Dream reminder (C1)** — no scheduled tasks, no session-event writes. A day-granular nudge appears only when a dream is overdue and there is new material. Zero cost when nothing is due; nothing to clean up on uninstall.
-- **Optional visual panel**: a Settings section in DSH, plus a standalone page at `/memory-fish/panel` (v0.9 adds a todos block with done/drop buttons).
+- **Optional visual panel**: a Settings section in DSH, plus a standalone page at `/memory-fish/panel` (v0.9 adds a todos block with done/drop buttons; the budget bar follows `budgetTokens`).
 - **Mental model (v0.8)**: the L0 profile is rewritten periodically — the plugin decides due-ness and writes a task file, an isolated subagent does the writing, so the main context pays almost nothing.
 - **Cache-friendly injection (v0.9)**: `injectionMode` freezes the L1 hot index into a snapshot (`session` / `daily` / `live`), so the system-prompt prefix only changes on real events.
 - **Typed memories & todos (v0.9)**: `kind: fact | skill | task`; the `memory_task` tool with due dates, priorities and a `remaining` loop.
@@ -88,7 +88,8 @@ further and freezes the L1 hot index into an explicit *injection snapshot*.
 - The snapshot is persisted at `<dir>/injection-cache.json` and replayed on restart; if a
   new-session event still triggers one rebuild, the rendered text is identical, so the
   prompt prefix keeps hitting.
-- Invalidation reasons are observable: `init` / `session` / `day` / `dream` / `consolidate`.
+- Invalidation reasons are observable: `init` / `session` / `day` / `dream` / `consolidate`;
+  non-`live` modes also rebuild once when the local day changes (`reason=day`).
 - Observability: `memory_stats` exposes `injectionMode`, `injectionRebuilds`,
   `lastInjectionRebuild{at,reason,day}`, `injectionCacheDay`; the panel shows the rebuild
   count and latest reason.
@@ -96,7 +97,10 @@ further and freezes the L1 hot index into an explicit *injection snapshot*.
   C1 nudge stay live (profile edits take effect immediately; the C1 text is day-granular
   and only changes on events / day boundaries / crossing the overdue threshold).
 - Hard budget guard: `estTokens(block) ≤ budgetTokens`, trimming L1 lines from the end
-  when the fixed text overhead would overflow.
+  when the fixed text overhead would overflow. **Caveat:** extreme configs where
+  `profileTokens` approaches `budgetTokens` (e.g. 550/600) can still overshoot on the
+  fixed text; keep `profileTokens ≤ budgetTokens − 150` (the default 600/200 holds in
+  testing).
 
 ### Memory kinds & todos (v0.9-B)
 
@@ -111,7 +115,7 @@ New `memory_task` tool (11 → 12 tools):
 | action | Purpose |
 |---|---|
 | `add` | create: `title` / `content` / `dueAt` (`YYYY-MM-DD`, local day) / `priority` (1–5, default 3) / `note`; open tasks with similarity ≥0.75 merge in place |
-| `done` | mark complete (open only), records `doneAt` |
+| `done` | mark complete (open only), records `doneAt`; optional `note` is appended to the task note (`old \| new`) and used as Phase 6 material |
 | `drop` | drop (open only) |
 | `list` | sort by overdue → `dueAt` → `priority`, plus `remaining` (open summaries) |
 
@@ -158,13 +162,16 @@ overwritten by a same-topic fact, while fact → skill is allowed.
 ids (deduped, at most 5 kept); updating an entry unions the new ids with the old ones and
 keeps the latest 5. They are stored in the `sources:` frontmatter line and returned by
 `memory_read` / `memory_search` / `memory_list`. It is just a "where did this come from"
-pointer — no graph traversal.
+pointer — no graph traversal. Secret-looking `sources` values are filtered out; the NOOP
+(exact duplicate) branch writes no content but still merges new `sources` into the
+existing entry (provenance is not lost).
 
 **dream Phase 6 · skill distillation.** `memory_dream` checks for tasks completed since
 the last distillation (`stats.lastSkillExtract`; only `status=active` done tasks count):
 
 - **Some** → writes `dream/YYYY-MM-DD-skill-task.md` with:
-  - up to 10 recently completed tasks (id / title / content / note / done time)
+  - up to 10 recently completed tasks (id / title / content / note / done time; the note
+    is `add`'s note plus the `done` completion note)
   - up to 15 related active fact memories (shared task tags first, then most recent)
   - the last 3 dream-report summaries
   - distillation instructions for the subagent (1–3 skills, `TITLE:` / `SKILL:` /
@@ -208,7 +215,7 @@ The plugin registers 12 model tools (mutations are serialized by a cross-process
 | `memory_search` | Keyword search; `asOf` for historical versions; `includeArchived` for cold storage; results carry `kind` / `taskStatus` / `dueAt` / `sources` |
 | `memory_read` | Read full text (>4000 chars truncated) and reinforce; returns `kind` / `sources`; tasks are not reinforced |
 | `memory_list` | Recent memories; filter by `kind` (fact / skill / task); returns `sources` |
-| `memory_task` | Todos: add / done / drop / list (v0.9-B) |
+| `memory_task` | Todos: add / done / drop / list; `done` accepts a completion note (used as Phase 6 material) |
 | `memory_pin` | Pin/unpin (pinned never decays) |
 | `memory_forget` | Soft delete + tombstone |
 | `memory_profile_save` | Write the L0 profile (hard-clamped to `profileTokens`, secrets refused, stamps rewrite time) |
@@ -277,14 +284,15 @@ Key options: `dir`, `budgetTokens`, `profileTokens`, `maxHotLines`, `injectionMo
 ## Tests
 
 ```bash
-npm test   # 164 assertions: capture, redaction, save/dedupe/NOOP, search,
+npm test   # 166 assertions: capture, redaction, save/dedupe/NOOP, search,
            # asOf history, sleep phases + Phase 4 mental model + Phase 6 skill
            # distillation (due/task file/material caps/lastSkillExtract/disabled),
-           # skill kind + no kind downgrade, sources provenance round-trip/union,
-           # injection snapshot modes (session/daily/live, restart reuse, rebuild
+           # skill kind + no kind downgrade, sources provenance round-trip/union/
+           # NOOP merge/secret filter, note secret refusal, injection snapshot modes
+           # (session/daily/live, day-boundary rebuild, restart reuse, rebuild
            # reasons/counters), hard-budget pressure, kind/todo lifecycle and
            # injection, budget integration, byte-stable injection (cache friendly),
-           # panel routes + todo buttons, lock release
+           # panel routes + configurable budget + todo buttons, lock release
 ```
 
 CI runs on Linux and Windows with Node 22 and 24.
@@ -292,8 +300,10 @@ CI runs on Linux and Windows with Node 22 and 24.
 ## Security
 
 Local-first, no network. Journal writes redact API keys/tokens/passwords before
-hitting disk. The HTTP panel is localhost-only with same-origin checks but **no
-authentication** — run DSH on a trusted machine. See [SECURITY.md](./SECURITY.md).
+hitting disk. `memory_task` notes (`add` / `done` `note`) are checked against the secret
+patterns and refused with `secret_refused`; secret-looking values in `memory_save`
+`sources` are filtered out. The HTTP panel is localhost-only with same-origin checks but
+**no authentication** — run DSH on a trusted machine. See [SECURITY.md](./SECURITY.md).
 
 ## License
 

@@ -19,9 +19,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/), versioning follo
   repetition, decay/archival and consolidation; skills are excluded from the hot index.
 - **`memory_task` tool (11 → 12 tools).** Actions `add | done | drop | list`; `dueAt` is a
   local `YYYY-MM-DD` (invalid input → `invalid_input`), `priority` 1–5 (default 3),
-  optional `note`; open tasks with similarity ≥ `dedupeThreshold` merge in place;
-  `done`/`drop` only apply to open tasks. Every write action returns `remaining`
-  (still-open summaries) for a "what's left" loop.
+  optional `note`; `done` accepts an extra `note` that is appended to the task note
+  (`old | new`) and later used as Phase 6 material; open tasks with similarity ≥
+  `dedupeThreshold` merge in place; `done`/`drop` only apply to open tasks. Every write
+  action returns `remaining` (still-open summaries) for a "what's left" loop.
 - **Injected `### 待办` block (v0.9-B).** Rendered live (not part of the L1 snapshot)
   between profile and hot index: open tasks only, max 5 lines, overdue as `- ⏰ MM-DD …`,
   due tasks as `- · MM-DD …`, no-deadline as `- · …`; overflow prints
@@ -70,7 +71,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/), versioning follo
 ### Fixed
 - **Whole-block hard budget guard.** The v0.8 builder could exceed `budgetTokens` because
   of fixed text overhead (header, footer rules, threshold line); v0.9 renders the block
-  and trims L1 lines from the end until `estTokens(block) ≤ budgetTokens`.
+  and trims L1 lines from the end until `estTokens(block) ≤ budgetTokens`. Caveat: when
+  `profileTokens` is close to `budgetTokens` (e.g. 550/600) the fixed text can still
+  overshoot; keep `profileTokens ≤ budgetTokens − 150` (the default 600/200 holds in
+  testing).
+- **Secret hygiene for task notes (v0.9.0 polish).** `memory_task` checks `note` on both
+  `add` and `done` against `SECRET_RE`; a hit returns `secret_refused` instead of writing
+  the secret to disk (notes are also embedded in Phase 6 task materials).
+- **`sources` filtering and NOOP merge (v0.9.0 polish).** `memory_save` drops
+  secret-looking `sources` values before persisting; the NOOP (exact duplicate) branch
+  writes no content but still merges the new `sources` into the existing entry and returns
+  them, so provenance is not lost.
+- **Panel budget bar follows config (v0.9.0 polish).** It now uses `budget` from the panel
+  state instead of a hardcoded 600, so custom `budgetTokens` renders correctly.
 - Injection rebuild counters are monotonic inside a process: mutating-tool `withLock` →
   `load()` re-reads `stats.json` but no longer resets `injectionRebuilds` /
   `lastInjectionRebuild` (the newest rebuild wins).
@@ -100,11 +113,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/), versioning follo
   prefix flips are a completed dream and the threshold crossing; the v0.10
   `reminderDelivery: 'tail'` option (see `docs/DSH-APPEND-INJECTION.md`) is the alternative
   to freezing C1.
-- Tests: 164 assertions — snapshot modes (session/daily/live, restart reuse, rebuild
-  reasons/counters), hard-budget pressure (30 long titles), kind migration and
-  no-downgrade, todo lifecycle/injection/overflow, Phase 6 due/task-file/materials/
-  `lastSkillExtract`/disabled, sources round-trip and union, dream material exclusions,
-  budget integration, panel todo routes, plus all previous suites green.
+- Tests: 166 assertions — snapshot modes (session/daily/live, day-boundary rebuild,
+  restart reuse, rebuild reasons/counters), hard-budget pressure (30 long titles), kind
+  migration and no-downgrade, todo lifecycle/injection/overflow + `done` note append,
+  Phase 6 due/task-file/materials/`lastSkillExtract`/disabled, sources round-trip/union/
+  NOOP merge/secret filter, note secret refusal, dream material exclusions, budget
+  integration, panel todo routes + configurable budget, plus all previous suites green.
 
 ## [0.8.1] — 2026-10-26
 

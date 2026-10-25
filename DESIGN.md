@@ -30,7 +30,7 @@
 
 | 模式 | 快照何时重建 | 失效原因（reason） | 适合 |
 |---|---|---|---|
-| `session`（默认） | 新会话首步 / 做梦后 / 整理后 | init · session · dream · consolidate | 长会话，最大化缓存命中 |
+| `session`（默认） | 新会话首步 / 跨本地日 / 做梦后 / 整理后 | init · session · day · dream · consolidate | 长会话，最大化缓存命中 |
 | `daily` | 每个本地日首次注入 / 做梦后 / 整理后 | init · day · dream · consolidate | 一天多会话，想每天刷新索引 |
 | `live` | 每次注入实时重建 | live（不落盘、不计数） | 测试 / 调试、短会话 |
 
@@ -40,9 +40,10 @@
 - 启动 `load()` 时读回磁盘快照并信任它（前提是没有更早的事件把它标脏）；重启后可复用快照，即使新会话事件触发一次重建，输出文本也不变
 - 未完成首次 `load()` 前不缓存（避免把空索引冻住）
 - `session` 模式在 `session/event` 里检测**新会话**（忽略 subagent）→ `invalidateInjection('session')`
+- 非 `live` 模式跨本地日也会额外重建一次（`reason=day`）：同一会话内跨过日界后，下一次注入会刷新快照
 - `memory_dream` / `memory_consolidate` 结束后分别标脏 `dream` / `consolidate`
 - 观测：`stats.injectionRebuilds`（进程内单调不减）、`stats.lastInjectionRebuild{at,reason,day}`，由 `memory_stats` 与面板 state 暴露
-- 整块硬预算：`estTokens(注入块) ≤ budgetTokens`，超出从 L1 末尾逐行删（正文固定开销不再导致越界）
+- 整块硬预算：`estTokens(注入块) ≤ budgetTokens`，超出从 L1 末尾逐行删（正文固定开销不再导致越界）。**caveat**：`profileTokens` 接近 `budgetTokens` 的极端配置（如 550/600）固定文案开销仍可能略超，建议 `profileTokens ≤ budgetTokens − 150`（默认 600/200 实测成立）
 
 ### 3. kind：事实 / 技能 / 任务
 
@@ -79,6 +80,8 @@ v0.9 的决定：**仍用 system prompt + 快照，不引入 tail 注入**。理
 
 - `memory_save` 可选 `sources`：字符串 id 数组，去重后保留最近 5 个；落盘为 frontmatter 的 `sources:`（逗号风格）
 - 更新已有条目 → 新 id 与旧 `sources` 取并集，再保留最近 5 个
+- 疑似密钥值会被过滤（不写盘、不返回）；note 字段（`memory_task` 的 `add` / `done`）命中密钥检测则直接 `secret_refused`
+- 完全重复（NOOP）不写正文，但新 `sources` 仍合并进旧条目并返回（溯源不丢）
 - `memory_read` / `memory_search` / `memory_list` 返回值都带 `sources`（`memory_save` 也返回）
 - 只是"这条记忆从哪来"的指针：不做图遍历、不校验 id 是否存在（可以指向已归档/已删除的 task）
 - skill 用它指回来源 task（Phase 6 落盘时 `sources=[task id]`）
@@ -95,7 +98,7 @@ v0.9 的决定：**仍用 system prompt + 快照，不引入 tail 注入**。理
 | 步骤 | 谁做 | 做什么 |
 |---|---|---|
 | 1. 判到期 | 插件 | `skillExtraction !== false` 且存在 `status=active`、`taskStatus=done`、`doneAt > stats.lastSkillExtract` 的 task（缺 `doneAt` 保守算新） |
-| 2. 备材料 | 插件 | 完成任务 ≤10（id / 标题 / 内容 / 备注 / 完成时间）+ 相关活跃 fact ≤15（任务标签共现优先，其次最近更新）+ 最近 3 天睡梦摘要 + subagent 指令 |
+| 2. 备材料 | 插件 | 完成任务 ≤10（id / 标题 / 内容 / 备注 / 完成时间；备注 = `add` 的 note + `done` 追加的完成备注，`旧 \| 新`）+ 相关活跃 fact ≤15（任务标签共现优先，其次最近更新）+ 最近 3 天睡梦摘要 + subagent 指令 |
 | 3. 写任务文件 | 插件 | `dream/YYYY-MM-DD-skill-task.md`；**只有写成功才**更新 `stats.lastSkillExtract`（避免每晚重复生成） |
 | 4. 报告 | 插件 | `## 🧠 Phase 6 · Skill 提炼`：`技能提炼：是 → 任务文件：…` / `技能提炼：否（无新完成的待办任务…）`；`skillExtraction: false` 时整节不出现 |
 | 5. 提炼 | subagent | 读任务文件，产出 1–3 条 skill（`TITLE:` / `SKILL:` / `TAGS:` / `SOURCES:`，中文祈使句，≤200 tokens/条，不调工具） |
