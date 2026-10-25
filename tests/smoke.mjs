@@ -886,6 +886,13 @@ const pushRaw = async (store, over) => {
     app.ok === true && app.mode === 'append'
     && store.byId(s.id).content === '新内容：先跑测试再打包。\n追加：发布后观察日志。'
     && store.byId(s.id).history.length === 2, store.byId(s.id).content);
+  // v0.10.0：同一秒内连续归档不互相覆盖（技能连续修订是常见操作）
+  const archBefore2 = fs.readdirSync(store.archDir).length;
+  const archFile1 = await store.archiveContent(store.byId(s.id), '归档冲突测试 1');
+  const archFile2 = await store.archiveContent(store.byId(s.id), '归档冲突测试 2');
+  check('v0.10 同一秒两次归档不覆盖',
+    archFile1 !== archFile2 && fs.existsSync(archFile1) && fs.existsSync(archFile2)
+    && fs.readdirSync(store.archDir).length === archBefore2 + 2, { archFile1, archFile2 });
   const fact = await saveMemoryCore(store, cfg, { title: '普通事实', content: '普通事实正文。' });
   const nonSkill = await skillCore(store, cfg, { action: 'update', id: fact.id, content: 'x' });
   check('v0.10 update 非 skill → invalid_kind', nonSkill.ok === false && nonSkill.code === 'invalid_kind', nonSkill);
