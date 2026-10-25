@@ -13,6 +13,7 @@
 - **Dream reminder (C1)** — no scheduled tasks and no session-event writes; the injected block nudges when a dream is due. Nothing to initialize, nothing to clean up.
 - **Zero dependencies, zero servers** — plain Markdown + JSON under `~/.dsh/memory-fish/`.
 - **Optional visual panel** — a Settings section in DSH plus a standalone page at `/memory-fish/panel`.
+- **New mark** — a chubby fish whose body is a memory core: three memory strata, a small neural net, RAM-style belly pins and a puzzle-piece dorsal fin for "plugin". Not the DeepSeek whale.
 
 ## Install
 
