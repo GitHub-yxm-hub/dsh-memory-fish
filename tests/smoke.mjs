@@ -53,7 +53,7 @@ const check = (label, cond, extra) => {
 };
 
 console.log('registered tools:', Object.keys(tools).join(', '));
-check('注册 12 个工具', Object.keys(tools).length === 12);
+check('注册 13 个工具', Object.keys(tools).length === 13);
 
 // --- 自动捕获 ---
 const emit = (session, event) => listeners.filter(l => l.event === 'session/event').forEach(l => l.fn(session, event));
@@ -182,9 +182,9 @@ check('面板拒绝跨源', await (async () => {
 const { resolveConfig } = await import(pathToFileURL(path.join(root, 'lib/config.mjs')).href);
 const { Store } = await import(pathToFileURL(path.join(root, 'lib/store.mjs')).href);
 const { buildDream } = await import(pathToFileURL(path.join(root, 'lib/dream.mjs')).href);
-const { saveMemoryCore, taskCore, normalizeDueAt } = await import(pathToFileURL(path.join(root, 'lib/core.mjs')).href);
+const { saveMemoryCore, taskCore, normalizeDueAt, skillCore } = await import(pathToFileURL(path.join(root, 'lib/core.mjs')).href);
 const { estTokens, localDay } = await import(pathToFileURL(path.join(root, 'lib/util.mjs')).href);
-const { buildInjection } = await import(pathToFileURL(path.join(root, 'lib/inject.mjs')).href);
+const { buildInjection, SKILL_HINT } = await import(pathToFileURL(path.join(root, 'lib/inject.mjs')).href);
 
 // 主实例：归档 / 硬截断 / 重写时间
 const profileBefore = fs.readFileSync(path.join(memDir, 'profile.md'), 'utf8');
@@ -801,6 +801,158 @@ const pushRaw = async (store, over) => {
     sectionOf(inj.text, '### 热索引').includes('普通事实记忆条目') && sectionOf(inj.text, '### 待办').includes('待办任务条目'));
 }
 
+// --- v0.10.0 技能库 memory_skill（list/search/add/update）+ 缓存安全复用提示 ---
+{
+  // add 复用 saveMemoryCore；list 只列 active skill、按 updated 倒序、字段完整
+  const { store, cfg } = await bootSnapStore({ injectionMode: 'live', skillExtraction: false, mentalModel: false, dreamReminder: false });
+  await saveMemoryCore(store, cfg, { title: '普通事实条目', content: '普通事实，不该出现在技能库。' });
+  const s1 = await skillCore(store, cfg, { action: 'add', title: '技能：发布前跑测试', content: '发布前先跑 smoke 测试，确认 ALL PASS 再打包。', tags: ['流程'] });
+  check('v0.10 memory_skill add 复用 saveMemoryCore（kind=skill）',
+    s1.ok === true && s1.saved === true && s1.kind === 'skill' && store.byId(s1.id).kind === 'skill', s1);
+  const dup = await skillCore(store, cfg, { action: 'add', title: '技能：发布前跑测试', content: '发布前先跑 smoke 测试，确认 ALL PASS 再打包。', tags: ['流程'] });
+  check('v0.10 memory_skill add 复用去重/新颖性', dup.ok === true && (dup.updated === true || dup.noop === true), dup);
+  const s2 = await skillCore(store, cfg, { action: 'add', title: '技能：图片水印', content: '水印统一用 sharp 处理。', tags: ['图片'] });
+  const listed = await skillCore(store, cfg, { action: 'list' });
+  check('v0.10 list 只列 active skill 且字段完整',
+    listed.ok === true && listed.total === 2 && listed.skills.length === 2
+    && listed.skills.every(x => x.id && typeof x.title === 'string' && Array.isArray(x.tags)
+      && typeof x.updated === 'string' && typeof x.importance === 'number' && typeof x.hits === 'number')
+    && !listed.skills.some(x => x.title === '普通事实条目'), listed);
+  check('v0.10 list 按 updated 倒序', listed.skills[0].id === s2.id, listed.skills.map(x => x.id));
+}
+{
+  // search：标题/标签/正文三处命中 + reinforce 记录 + excerpt/content 字段
+  const { store, cfg } = await bootSnapStore({ injectionMode: 'live', skillExtraction: false, mentalModel: false, dreamReminder: false });
+  const a = await skillCore(store, cfg, { action: 'add', title: '缓存优化技巧', content: '先看命中率再调参数。', tags: ['性能'] });
+  const b = await skillCore(store, cfg, { action: 'add', title: '性能排查流程', content: '先看指标再定位。', tags: ['缓存'] });
+  const c = await skillCore(store, cfg, { action: 'add', title: '排障套路', content: '遇到缓存穿透先看空值策略。', tags: ['排障'] });
+  await saveMemoryCore(store, cfg, { title: '普通缓存事实', content: '缓存相关事实记忆，不应出现在技能搜索结果。' });
+  const r = await skillCore(store, cfg, { action: 'search', query: '缓存' });
+  check('v0.10 search 三处命中（标题3/标签2/正文1）',
+    r.ok === true && r.matches.length === 3
+    && r.matches.map(m => m.id).join(',') === [a.id, b.id, c.id].join(',')
+    && r.matches[0].score === 3 && r.matches[1].score === 2 && r.matches[2].score === 1,
+    r.matches.map(m => ({ id: m.id, s: m.score })));
+  check('v0.10 search 命中记 hits/lastHit 并 reinforce',
+    store.byId(a.id).hits === 1 && store.byId(a.id).lastHit !== null
+    && store.byId(a.id).reviews === 1 && store.byId(a.id).stability > 0
+    && store.stats.searches === 1, { hits: store.byId(a.id).hits, reviews: store.byId(a.id).reviews });
+  check('v0.10 search 返回 excerpt≤200 / content≤800 / truncated',
+    r.matches.every(m => typeof m.content === 'string' && m.content.length <= 800
+      && typeof m.truncated === 'boolean' && typeof m.excerpt === 'string' && m.excerpt.length <= 200)
+    && r.matches.find(m => m.id === c.id).excerpt.includes('缓存'), r.matches.map(m => m.excerpt));
+}
+{
+  // search：长正文 content 截断到 800
+  const { store, cfg } = await bootSnapStore({ injectionMode: 'live', skillExtraction: false, mentalModel: false, dreamReminder: false });
+  const long = await skillCore(store, cfg, { action: 'add', title: '长技能正文', content: `开头。缓存关键点。${'长'.repeat(900)}` });
+  const r = await skillCore(store, cfg, { action: 'search', query: '缓存' });
+  const hit = r.matches.find(m => m.id === long.id);
+  check('v0.10 search 长正文 content≤800 且 truncated=true',
+    !!hit && hit.truncated === true && hit.content.length === 800 && hit.excerpt.length <= 200,
+    hit && { len: hit.content.length, truncated: hit.truncated });
+}
+{
+  // 非法输入 + add 的 sources/正文密钥处理（与 v0.9.0 一致）
+  const { store, cfg } = await bootSnapStore({ injectionMode: 'live', skillExtraction: false, mentalModel: false, dreamReminder: false });
+  const badAction = await skillCore(store, cfg, { action: 'nope' });
+  check('v0.10 非法 action → invalid_input', badAction.ok === false && badAction.code === 'invalid_input', badAction);
+  const emptyQuery = await skillCore(store, cfg, { action: 'search', query: '  ' });
+  check('v0.10 空 query → invalid_input', emptyQuery.ok === false && emptyQuery.code === 'invalid_input', emptyQuery);
+  const secSrc = await skillCore(store, cfg, { action: 'add', title: '技能：来源过滤', content: 'sources 里的密钥值要被过滤。', sources: ['sk-abcdefghijklmnopqrstuvwxyz123456', 'task-ok'] });
+  check('v0.10 add 的 sources 过 SECRET_RE 过滤',
+    secSrc.ok === true && Array.isArray(secSrc.sources) && secSrc.sources.length === 1 && secSrc.sources[0] === 'task-ok', secSrc.sources);
+  const secContent = await skillCore(store, cfg, { action: 'add', title: '技能：密钥正文', content: 'API key: sk-abcdefghijklmnopqrstuvwxyz123456' });
+  check('v0.10 add 正文含密钥 → secret_refused', secContent.ok === false && secContent.code === 'secret_refused', secContent);
+}
+{
+  // update：替换 / append / history / archive / title/tags/sources / 错误路径 / history 上限
+  const { store, cfg } = await bootSnapStore({ injectionMode: 'live', skillExtraction: false, mentalModel: false, dreamReminder: false });
+  const s = await skillCore(store, cfg, { action: 'add', title: '技能：发布流程', content: '旧内容：先跑测试。', tags: ['流程'], sources: ['t1'] });
+  const archBefore = fs.readdirSync(store.archDir).length;
+  const upd = await skillCore(store, cfg, { action: 'update', id: s.id, content: '新内容：先跑测试再打包。', title: '技能：发布流程 v2', tags: ['发布', '流程'], sources: ['t2', 't3'] });
+  const e = store.byId(s.id);
+  check('v0.10 update 替换 content/title/tags/sources 并刷新 validFrom/updated',
+    upd.ok === true && upd.updated === true && upd.mode === 'replace'
+    && e.content === '新内容：先跑测试再打包。' && e.title === '技能：发布流程 v2'
+    && e.tags.length === 2 && e.sources.join(',') === 't1,t2,t3'
+    && e.validFrom === upd.validFrom && e.updated === upd.updatedAt, upd);
+  check('v0.10 update 旧版本进 history（含 validTo）',
+    e.history.length === 1 && e.history[0].content === '旧内容：先跑测试。'
+    && e.history[0].title === '技能：发布流程' && typeof e.history[0].validTo === 'string', e.history);
+  check('v0.10 update 归档旧文件', fs.readdirSync(store.archDir).length === archBefore + 1);
+  const app = await skillCore(store, cfg, { action: 'update', id: s.id, append: '追加：发布后观察日志。' });
+  check('v0.10 update append 追加到旧内容末尾',
+    app.ok === true && app.mode === 'append'
+    && store.byId(s.id).content === '新内容：先跑测试再打包。\n追加：发布后观察日志。'
+    && store.byId(s.id).history.length === 2, store.byId(s.id).content);
+  const fact = await saveMemoryCore(store, cfg, { title: '普通事实', content: '普通事实正文。' });
+  const nonSkill = await skillCore(store, cfg, { action: 'update', id: fact.id, content: 'x' });
+  check('v0.10 update 非 skill → invalid_kind', nonSkill.ok === false && nonSkill.code === 'invalid_kind', nonSkill);
+  const missing = await skillCore(store, cfg, { action: 'update', id: 'no-such-id', content: 'x' });
+  check('v0.10 update 不存在 → not_found', missing.ok === false && missing.code === 'not_found', missing);
+  const noContent = await skillCore(store, cfg, { action: 'update', id: s.id });
+  check('v0.10 update 空 content/append → invalid_input', noContent.ok === false && noContent.code === 'invalid_input', noContent);
+  for (let i = 0; i < 12; i++) await skillCore(store, cfg, { action: 'update', id: s.id, content: `第 ${i} 版内容。` });
+  check('v0.10 update history 最多 10 条', store.byId(s.id).history.length === 10, store.byId(s.id).history.length);
+}
+{
+  // 注入提示 + 缓存稳定（session 快照模式）：无 skill 无提示；有 skill 固定提示；search/update 不改变字节
+  const { store, cfg } = await bootSnapStore(); // 默认 session 模式
+  const t0 = buildInjection(store, cfg).text;
+  check('v0.10 无 skill 时注入块不含复用提示', !t0.includes(SKILL_HINT) && !t0.includes('memory_skill search'), t0.slice(-300));
+  const sk = await skillCore(store, cfg, { action: 'add', title: '技能：缓存稳定', content: '第一版技能内容。' });
+  const t1 = buildInjection(store, cfg).text;
+  check('v0.10 有 skill 时出现固定复用提示', t1.includes(SKILL_HINT), t1.slice(-400));
+  const rb = store.stats.injectionRebuilds;
+  await skillCore(store, cfg, { action: 'search', query: '缓存稳定' });
+  await skillCore(store, cfg, { action: 'update', id: sk.id, content: '第二版技能内容（更新后注入块不应变化）。' });
+  await skillCore(store, cfg, { action: 'update', id: sk.id, append: '追加内容。' });
+  const t2 = buildInjection(store, cfg).text;
+  check('v0.10 skill search/update 后注入块字节不变且不重建',
+    t2 === t1 && store.stats.injectionRebuilds === rb && store.injectDirty === false,
+    { rebuilt: store.stats.injectionRebuilds !== rb, same: t2 === t1, dirty: store.injectDirty });
+}
+{
+  // live 模式 + 预算：提示计入 reservedTokens，整块仍 ≤ budgetTokens；skill 更新字节不变
+  const { store, cfg } = await bootSnapStore({ injectionMode: 'live' });
+  fs.writeFileSync(store.profileFile, `# 小肥鱼记忆 · L0 画像\n\n${'铁凝：喜欢写代码、折腾电脑、关注新技术（AI / 开发工具 / 编程前沿）。中文交流，语气轻松。'.repeat(30)}\n`, 'utf8');
+  const now = new Date().toISOString();
+  for (let i = 0; i < 12; i++) {
+    const entry = {
+      id: `skill-budget-${i}`, title: `预算整合记忆${i}号标题也需要三十个汉字左右来占用热索引预算`,
+      content: `预算整合记忆正文 ${i}。`, kind: 'fact',
+      tags: ['预算'], importance: 3, salience: 5, pinned: false,
+      created: now, updated: now, validFrom: now, validTo: null, history: [], sources: [],
+      hits: 0, lastHit: null, status: 'active', supersedes: [], links: [],
+      chars: 0, tokens: 0, file: '',
+      stability: 10, lastReview: now, nextReview: new Date(Date.now() + 86400000).toISOString(), reviews: 0,
+    };
+    await store.writeMemory(entry, entry.content);
+    store.entries.push(entry);
+  }
+  await store.saveIndex();
+  check('v0.10 预算场景初始无技能提示', !buildInjection(store, cfg).text.includes(SKILL_HINT));
+  const sk = await skillCore(store, cfg, { action: 'add', title: '预算技能：缓存技巧', content: '需要时先查缓存。', tags: ['预算'] });
+  const hot = buildInjection(store, cfg);
+  check('v0.10 预算整合：含技能提示仍 ≤ budgetTokens',
+    hot.text.includes(SKILL_HINT) && estTokens(hot.text) <= cfg.budgetTokens,
+    { tokens: estTokens(hot.text), budget: cfg.budgetTokens, l1: hot.l1Lines });
+  await skillCore(store, cfg, { action: 'update', id: sk.id, content: '更新后的预算技能内容。' });
+  check('v0.10 live 模式下 skill 更新注入块字节不变', buildInjection(store, cfg).text === hot.text);
+}
+{
+  // dream Phase 6 指令改用 memory_skill add（也兼容 memory_save）
+  const { store, cfg } = await bootSnapStore({ injectionMode: 'live', skillExtraction: true, mentalModel: false, dreamReminder: false });
+  const t = await taskCore(store, cfg, { action: 'add', title: '指令更新任务', content: '完成后应生成 skill 任务。' });
+  await taskCore(store, cfg, { action: 'done', id: t.id });
+  const d = await buildDream(store, cfg, 1);
+  const txt = fs.readFileSync(d.skillExtraction.taskFile, 'utf8');
+  check('v0.10 Phase 6 任务文件指引 memory_skill add（兼容 memory_save）',
+    txt.includes('memory_skill add') && txt.includes("memory_save(kind='skill'")
+    && d.report.includes('memory_skill add'), txt.slice(-320));
+}
+
 // --- 整理 / 置顶 / 遗忘 ---
 const cons = await call('memory_consolidate', { dryRun: false });
 check('整理报告可序列化', typeof cons.mergedCount === 'number', cons);
@@ -904,6 +1056,38 @@ check('注入预算 ≤ 600 tokens', stats2.injectedL1Tokens <= 600, stats2.inje
     && JSON.parse(fs.readFileSync(path.join(memDir, 'stats.json'), 'utf8')).lastSkillExtract === stC2.lastSkillExtract);
   const dreamC2 = await call('memory_dream', { days: 1 });
   check('v0.9-C 主实例再次做梦不重复生成', dreamC2.skillExtraction.due === false && dreamC2.skillExtraction.taskFile === null);
+}
+
+// --- v0.10.0 技能库（主实例：memory_skill 全链路 + 注入提示 + 缓存字节稳定）---
+{
+  const skAdd = await call('memory_skill', {
+    action: 'add',
+    title: '主实例技能：检索复用闭环',
+    content: '需要相关经验时先 memory_skill search 检索技能库，命中后直接复用 content。',
+    tags: ['技能'],
+    sources: ['src-task-1'],
+  });
+  check('v0.10 主实例 memory_skill add',
+    skAdd.ok === true && skAdd.kind === 'skill' && Array.isArray(skAdd.sources) && skAdd.sources.includes('src-task-1'), skAdd);
+  const skList = await call('memory_skill', { action: 'list', limit: 50 });
+  check('v0.10 主实例 list 含新技能', skList.ok === true && skList.skills.some(x => x.id === skAdd.id), skList.skills);
+  const skSearch = await call('memory_skill', { action: 'search', query: '检索复用闭环' });
+  check('v0.10 主实例 search 返回可复用 content/excerpt',
+    skSearch.matches.some(m => m.id === skAdd.id && typeof m.content === 'string'
+      && typeof m.truncated === 'boolean' && typeof m.excerpt === 'string'), skSearch.matches);
+  const blockBefore = injected();
+  check('v0.10 主实例注入块含固定复用提示', blockBefore.includes(SKILL_HINT), blockBefore.slice(-300));
+  const skUpd = await call('memory_skill', { action: 'update', id: skAdd.id, append: '补充：命中的 content 可以直接引用。' });
+  check('v0.10 主实例 update append', skUpd.ok === true && skUpd.mode === 'append' && skUpd.historyCount === 1, skUpd);
+  check('v0.10 主实例 skill 更新后注入块字节不变', injected() === blockBefore);
+  const badSkillAction = await call('memory_skill', { action: 'bogus' });
+  check('v0.10 主实例非法 action → invalid_input', badSkillAction.ok === false && badSkillAction.code === 'invalid_input');
+  const emptySkillQuery = await call('memory_skill', { action: 'search', query: '' });
+  check('v0.10 主实例空 query → invalid_input', emptySkillQuery.ok === false && emptySkillQuery.code === 'invalid_input');
+  const stSkillC = await call('memory_stats', {});
+  check('v0.10 stats kindCounts.skill 更新', stSkillC.kindCounts.skill >= 3, stSkillC.kindCounts);
+  const compatSkill = await call('memory_save', { title: '兼容技能：memory_save 仍可写 skill', content: '旧路径 memory_save(kind=skill) 继续可用。', kind: 'skill' });
+  check('v0.10 memory_save(kind=skill) 兼容', compatSkill.ok === true && compatSkill.kind === 'skill' && injected().includes(SKILL_HINT), compatSkill);
 }
 
 console.log('\n--- injected block ---');
