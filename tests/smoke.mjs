@@ -769,6 +769,17 @@ const pushRaw = async (store, over) => {
   const sk2 = await saveMemoryCore(store, cfg, { title: '部署技能：先跑测试', content: '部署前先跑冒烟测试，确认 ALL PASS 再发布。', kind: 'skill', sources: ['m1', 'm2', 'm3', 'm4', 'm5', 'm6'] });
   check('v0.9-C 更新分支 sources 取并集并保留最近 5 个',
     sk2.updated === true && sk2.sources.length === 5 && sk2.sources[4] === 'm6' && !sk2.sources.includes(src1.id), sk2.sources);
+  // v0.9.0：完全重复（NOOP）不写正文，但新 sources 仍合并；note/sources 中的密钥被拦截/过滤
+  const cfgNoop = resolveConfig({ dir, injectionMode: 'live' });
+  const dupSrc = await saveMemoryCore(store, cfgNoop, { title: '部署技能：先跑测试', content: '部署前先跑冒烟测试，确认 ALL PASS 再发布。', kind: 'skill', sources: ['noop-src'] });
+  check('v0.9.0 NOOP 分支仍合并 sources', dupSrc.noop === true && Array.isArray(dupSrc.sources) && dupSrc.sources.includes('noop-src'), dupSrc.sources);
+  const secNoteAdd = await taskCore(store, cfg, { action: 'add', title: '密钥备注任务', content: '备注里带密钥应被拒绝。', note: 'password: supersecret123456' });
+  const secNoteDone = await taskCore(store, cfg, { action: 'done', id: src1.id, note: 'api_key = abcdefghijklmnop123456' });
+  const secSource = await saveMemoryCore(store, cfg, { title: '密钥来源技能', content: 'sources 里带密钥的值应被过滤。', kind: 'skill', sources: ['sk-abcdefghijklmnopqrstuvwxyz123456', 'ok-src'] });
+  check('v0.9.0 note/sources 密钥拦截与过滤',
+    secNoteAdd.code === 'secret_refused' && secNoteDone.code === 'secret_refused'
+    && Array.isArray(secSource.sources) && secSource.sources.length === 1 && secSource.sources[0] === 'ok-src',
+    { add: secNoteAdd.code, done: secNoteDone.code, src: secSource.sources });
   const downgrade = await saveMemoryCore(store, cfg, { title: '部署技能：先跑测试', content: '部署前先跑冒烟测试，确认 ALL PASS 再发布。', kind: 'fact' });
   check('v0.9-C kind 不可降级：skill 不被同主题 fact 覆盖',
     downgrade.updated === true && store.byId(sk.id).kind === 'skill' && downgrade.kind === 'skill', { kind: store.byId(sk.id).kind });
