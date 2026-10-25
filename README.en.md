@@ -1,4 +1,6 @@
-# dsh-memory-fish 🐟
+﻿# dsh-memory-fish 🐟
+
+![banner](https://raw.githubusercontent.com/GitHub-yxm-hub/dsh-memory-fish/main/docs/banner.png)
 
 > **Context-budgeted local memory for DeepSeek Harness.**
 > Memory can grow forever; the prompt injection stays at a fixed ~600 tokens.
@@ -116,3 +118,4 @@ authentication** — run DSH on a trusted machine. See [SECURITY.md](./SECURITY.
 ## License
 
 MIT
+

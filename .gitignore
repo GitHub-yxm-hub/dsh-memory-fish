@@ -7,3 +7,4 @@ backup-*/
 .DS_Store
 Thumbs.db
 *.bundle
+*.tgz
