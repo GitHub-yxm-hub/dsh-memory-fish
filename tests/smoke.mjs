@@ -53,7 +53,7 @@ const check = (label, cond, extra) => {
 };
 
 console.log('registered tools:', Object.keys(tools).join(', '));
-check('注册 11 个工具', Object.keys(tools).length === 11);
+check('注册 12 个工具', Object.keys(tools).length === 12);
 
 // --- 自动捕获 ---
 const emit = (session, event) => listeners.filter(l => l.event === 'session/event').forEach(l => l.fn(session, event));
@@ -182,7 +182,7 @@ check('面板拒绝跨源', await (async () => {
 const { resolveConfig } = await import(pathToFileURL(path.join(root, 'lib/config.mjs')).href);
 const { Store } = await import(pathToFileURL(path.join(root, 'lib/store.mjs')).href);
 const { buildDream } = await import(pathToFileURL(path.join(root, 'lib/dream.mjs')).href);
-const { saveMemoryCore } = await import(pathToFileURL(path.join(root, 'lib/core.mjs')).href);
+const { saveMemoryCore, taskCore, normalizeDueAt } = await import(pathToFileURL(path.join(root, 'lib/core.mjs')).href);
 const { estTokens, localDay } = await import(pathToFileURL(path.join(root, 'lib/util.mjs')).href);
 const { buildInjection } = await import(pathToFileURL(path.join(root, 'lib/inject.mjs')).href);
 
@@ -421,6 +421,178 @@ check('v0.9 injectionMode 白名单校验（非法回落 session）',
   check('v0.9 入口：换会话后快照重建并出现会话内记忆', tB.includes('会话内记忆') && tB !== tA);
 }
 
+// --- v0.9-B 记忆类型 + 待办注入（task/skill 不进热索引、待办实时、预算整合）---
+const sectionOf = (text, heading) => {
+  const i = String(text).indexOf(heading);
+  if (i < 0) return '';
+  const rest = String(text).slice(i + heading.length);
+  const end = rest.search(/\n#{3} |\n> |\n## /);
+  return (end < 0 ? rest : rest.slice(0, end)).trim();
+};
+const dayOffset = (days) => localDay(new Date(Date.now() + days * 86400000));
+{
+  const { store, cfg } = await bootSnapStore({ injectionMode: 'live' });
+  const past = dayOffset(-2);
+  const future = dayOffset(3);
+  // 1) 新建任务：dueAt 规范化 + 不初始化复习字段
+  const added = await taskCore(store, cfg, { action: 'add', title: '升级 Node 版本', content: '把 Node 升到 v24 并跑全量测试。', dueAt: past, priority: 4 });
+  check('v0.9-B 新建待办任务（dueAt 规整为本地日）',
+    added.ok === true && added.added === true && added.task.dueAt === past && added.remaining.length === 1, added);
+  check('v0.9-B task 不初始化复习字段、不计入到期',
+    !store.byId(added.id).nextReview && !store.byId(added.id).stability && store.due().every(e => e.kind !== 'task'));
+  const inj1 = buildInjection(store, cfg);
+  check('v0.9-B 待办块出现且逾期用「⏰ MM-DD」',
+    inj1.text.includes('### 待办') && inj1.text.includes(`- ⏰ ${past.slice(5)} 升级 Node 版本`), inj1.text);
+  check('v0.9-B task 不进热索引、不触发到期阈值',
+    !sectionOf(inj1.text, '### 热索引').includes('升级 Node 版本') && inj1.due === 0 && !inj1.text.includes('⏰ 有记忆到期该复习'));
+
+  // 2) 未来 dueAt / 无 dueAt 格式 + footer 规则行 + token 观测
+  const added2 = await taskCore(store, cfg, { action: 'add', title: '写 v0.9 验收报告', content: '整理验收结论发给铁凝。', dueAt: future, priority: 2 });
+  const added3 = await taskCore(store, cfg, { action: 'add', title: '整理桌面文件', content: '把桌面上的临时文件归档。' });
+  const inj2 = buildInjection(store, cfg);
+  check('v0.9-B 待办格式：未来 dueAt 用「· MM-DD」、无 dueAt 用「· 标题」',
+    inj2.text.includes(`- · ${future.slice(5)} 写 v0.9 验收报告`) && inj2.text.includes('- · 整理桌面文件'), inj2.text);
+  check('v0.9-B 有待办时 footer 出现闭环规则行', inj2.text.includes('> 完成待办后用 memory_task done 标记，并查看剩余。'));
+  check('v0.9-B 待办块计入 token 观测', inj2.tasksOpen === 3 && inj2.tasksOverdue === 1 && inj2.taskTokens > 0 && inj2.taskLines === 3, inj2);
+
+  // 3) 同主题 open task 合并更新
+  const dup = await taskCore(store, cfg, { action: 'add', title: '升级 Node 版本', content: '把 Node 升到 v24 并跑全量测试。', dueAt: future });
+  check('v0.9-B 同主题 open task 合并更新（不新增）',
+    dup.updated === true && dup.id === added.id && store.tasks().length === 3, { dup: dup.id, added: added.id, total: store.tasks().length });
+
+  // 4) list 排序：逾期 → dueAt → priority
+  const listed = await taskCore(store, cfg, { action: 'list' });
+  check('v0.9-B list 排序（逾期→dueAt→priority）',
+    listed.tasks[0].id === added.id && listed.tasks[1].id === added2.id && listed.tasks[2].id === added3.id,
+    listed.tasks.map(t => `${t.title}@${t.dueAt || '-'}`));
+
+  // 5) done：remaining 闭环、不再注入、非 open 不可重复
+  store.byId(added.id).nextReview = new Date(Date.now() - 86400000).toISOString(); // 刻意塞旧复习时间：task 仍不计到期
+  const done = await taskCore(store, cfg, { action: 'done', id: added.id });
+  check('v0.9-B 完成任务返回 remaining 闭环',
+    done.ok === true && done.taskStatus === 'done' && done.remaining.length === 2 && typeof done.doneAt === 'string', done);
+  const inj3 = buildInjection(store, cfg);
+  check('v0.9-B 已完成任务不再注入且不计到期', !inj3.text.includes('升级 Node 版本') && inj3.due === 0);
+  const again = await taskCore(store, cfg, { action: 'done', id: added.id });
+  check('v0.9-B 非 open 任务不能重复完成', again.ok === false && again.code === 'not_open', again);
+
+  // 6) 非法输入
+  const badDue = await taskCore(store, cfg, { action: 'add', title: '坏日期任务', content: 'x', dueAt: '2026-13-45' });
+  check('v0.9-B 非法 dueAt → invalid_input', badDue.ok === false && badDue.code === 'invalid_input', badDue);
+  check('v0.9-B normalizeDueAt 本地日规范化',
+    normalizeDueAt('2026-10-01') === '2026-10-01' && normalizeDueAt('') === '' && normalizeDueAt('2026-13-45') === false);
+
+  // 7) drop
+  const drop = await taskCore(store, cfg, { action: 'drop', id: added3.id });
+  check('v0.9-B 丢弃待办', drop.ok === true && drop.taskStatus === 'dropped' && drop.remaining.length === 1, drop);
+}
+
+{
+  // 重启后 frontmatter 往返（kind/task_status/due_at/priority/note）
+  const { store, cfg, dir } = await bootSnapStore({ injectionMode: 'live' });
+  const past = dayOffset(-1);
+  await taskCore(store, cfg, { action: 'add', title: '持久化待办测试', content: '重启后仍应存在。', dueAt: past, priority: 5, note: '备注：重启验证' });
+  const reopened = new Store(dir);
+  await reopened.init();
+  const t = reopened.openTasks()[0];
+  check('v0.9-B task frontmatter 往返（kind/status/dueAt/priority/note）',
+    !!t && t.kind === 'task' && t.taskStatus === 'open' && t.dueAt === past && t.priority === 5 && t.note.includes('重启验证'), t);
+  check('v0.9-B 重启后待办块仍注入', buildInjection(reopened, cfg).text.includes(`- ⏰ ${past.slice(5)} 持久化待办测试`));
+}
+
+{
+  // 旧数据迁移：无 kind 默认 fact；task 缺 taskStatus/priority 时补齐且不初始化复习
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fish-migrate-'));
+  fs.mkdirSync(path.join(dir, 'memories'), { recursive: true });
+  const now = new Date().toISOString();
+  const oldFact = { id: 'old-fact', title: '旧记忆', content: '旧数据没有 kind。', created: now, updated: now, status: 'active', importance: 3, salience: 5, tags: [] };
+  const oldTask = { id: 'old-task', title: '旧任务', content: '旧 task 数据缺字段。', created: now, updated: now, status: 'active', importance: 3, salience: 5, kind: 'task', tags: [] };
+  fs.writeFileSync(path.join(dir, 'index.json'), JSON.stringify({ version: 1, entries: [oldFact, oldTask] }));
+  const st = new Store(dir);
+  await st.init();
+  check('v0.9-B migrate 旧数据默认 fact + 补 task 字段',
+    st.byId('old-fact').kind === 'fact'
+    && st.byId('old-task').taskStatus === 'open' && st.byId('old-task').priority === 3
+    && !st.byId('old-task').nextReview && st.openTasks().length === 1);
+}
+
+{
+  // skill：可落库、不进热索引；memory_save 不允许 kind=task
+  const { store, cfg } = await bootSnapStore({ injectionMode: 'live' });
+  const sk = await saveMemoryCore(store, cfg, { title: 'shell 排障套路', content: '遇到 PowerShell 输出编码问题时先查 $OutputEncoding，再查控制台代码页。', kind: 'skill' });
+  check('v0.9-B skill 类型落库', sk.ok === true && sk.kind === 'skill' && store.byId(sk.id).kind === 'skill', sk);
+  check('v0.9-B skill 不进热索引', !sectionOf(buildInjection(store, cfg).text, '### 热索引').includes('shell 排障套路'));
+  const badKind = await saveMemoryCore(store, cfg, { title: '坏类型', content: 'x', kind: 'task' });
+  check('v0.9-B memory_save 不允许 kind=task', badKind.ok === false && badKind.code === 'invalid_input', badKind);
+}
+
+{
+  // 待办块行数上限 5 + 溢出提示；块本身受 taskTokens 约束
+  const { store, cfg } = await bootSnapStore({ injectionMode: 'live' });
+  const titles = ['升级 Node 到 v24', '补 memory_task 冒烟测试', '整理桌面临时文件', '写 v0.9 验收报告', '修复面板待办按钮', '清理日志目录', '复盘缓存失效问题'];
+  for (let i = 0; i < 7; i++) {
+    await taskCore(store, cfg, { action: 'add', title: titles[i], content: `第 ${i} 条待办；验证待办块最多 5 行与溢出提示。`, priority: (i % 5) + 1 });
+  }
+  check('v0.9-B 七个不同待办都落库（无意外去重）', store.openTasks().length === 7, store.openTasks().map(t => t.title));
+  const inj = buildInjection(store, cfg);
+  const taskSec = sectionOf(inj.text, '### 待办');
+  check('v0.9-B 待办块最多 5 行 + 溢出提示', inj.taskLines <= 5 && taskSec.includes('…另有') && inj.text.includes('（memory_task list）'), { lines: inj.taskLines, sec: taskSec });
+  check('v0.9-B 待办块 token 不超过 taskTokens', inj.taskTokens <= cfg.taskTokens, { tokens: inj.taskTokens, cap: cfg.taskTokens });
+}
+
+{
+  // session 模式：任务实时刷新，但 L1 快照不重建（待办块不走快照）
+  const { store, cfg } = await bootSnapStore();
+  const past = dayOffset(-1);
+  await saveMemoryCore(store, cfg, { title: '会话内记忆快照', content: '用于验证待办块实时、L1 冻结。' });
+  const before = buildInjection(store, cfg).text;
+  const rb = store.stats.injectionRebuilds;
+  await taskCore(store, cfg, { action: 'add', title: '会话内实时待办', content: '任务块不走 L1 快照。', dueAt: past });
+  const after = buildInjection(store, cfg).text;
+  check('v0.9-B session 模式待办块实时刷新且不重建 L1 快照',
+    after.includes(`- ⏰ ${past.slice(5)} 会话内实时待办`)
+    && store.stats.injectionRebuilds === rb
+    && sectionOf(after, '### 热索引') === sectionOf(before, '### 热索引'),
+    { rebuilt: store.stats.injectionRebuilds !== rb });
+}
+
+{
+  // 预算整合：长画像 + 6 条长标题待办 + 12 条记忆 → 整块 ≤ budgetTokens
+  const { store, cfg } = await bootSnapStore({ injectionMode: 'live' });
+  fs.writeFileSync(store.profileFile, `# 小肥鱼记忆 · L0 画像\n\n${'铁凝：喜欢写代码、折腾电脑、关注新技术（AI / 开发工具 / 编程前沿）。中文交流，语气轻松。'.repeat(30)}\n`, 'utf8');
+  const taskTitles = ['升级 Node 到 v24 并验证插件', '补 memory_task 的冒烟测试', '整理桌面临时文件并归档', '写 v0.9 验收报告发铁凝', '修复面板待办完成按钮', '清理 journal 日志目录'];
+  for (let i = 0; i < 6; i++) {
+    await taskCore(store, cfg, {
+      action: 'add',
+      title: taskTitles[i],
+      content: `预算整合测试任务 ${i}，验证待办块与热索引共享同一份注入预算。`,
+      dueAt: dayOffset(i),
+      priority: 3,
+    });
+  }
+  const now = new Date().toISOString();
+  for (let i = 0; i < 12; i++) {
+    const entry = {
+      id: `budget-b-${i}`,
+      title: `预算整合记忆${i}号标题也需要三十个汉字左右来占用热索引预算`,
+      content: `预算整合记忆正文 ${i}。`,
+      kind: 'fact',
+      tags: ['预算'], importance: 3, salience: 5, pinned: false,
+      created: now, updated: now, validFrom: now, validTo: null, history: [],
+      hits: 0, lastHit: null, status: 'active', supersedes: [], links: [],
+      chars: 0, tokens: 0, file: '',
+      stability: 10, lastReview: now, nextReview: new Date(Date.now() + 86400000).toISOString(), reviews: 0,
+    };
+    await store.writeMemory(entry, entry.content);
+    store.entries.push(entry);
+  }
+  await store.saveIndex();
+  const hot = buildInjection(store, cfg);
+  check('v0.9-B 预算整合：长画像 + 待办 + 12 条记忆 ≤ budgetTokens',
+    estTokens(hot.text) <= cfg.budgetTokens && hot.text.includes('### 待办') && hot.taskTokens > 0,
+    { tokens: estTokens(hot.text), budget: cfg.budgetTokens, l1: hot.l1Lines, taskTokens: hot.taskTokens });
+}
+
 // --- 整理 / 置顶 / 遗忘 ---
 const cons = await call('memory_consolidate', { dryRun: false });
 check('整理报告可序列化', typeof cons.mergedCount === 'number', cons);
@@ -435,6 +607,63 @@ check('注入块含热索引', block.includes('项目统一用 pnpm'), block);
 check('遗忘后不再注入', !block.includes('铁凝喜欢表情包'), block);
 const stats2 = await call('memory_stats', {});
 check('注入预算 ≤ 600 tokens', stats2.injectedL1Tokens <= 600, stats2.injectedL1Tokens);
+
+// --- v0.9-B 待办任务（主实例：工具 / 注入 / 检索 / 面板全链路）---
+{
+  const past = dayOffset(-1);
+  const dueBeforeB = stats2.dueReview;
+  const tAdd = await call('memory_task', { action: 'add', title: '主实例待办：写测试', content: '给 memory_task 补冒烟测试。', dueAt: past, priority: 5 });
+  check('v0.9-B 主实例新增任务返回 remaining 闭环',
+    tAdd.ok === true && tAdd.added === true && Array.isArray(tAdd.remaining) && tAdd.remaining.length === 1, tAdd);
+  const blockB = injected();
+  check('v0.9-B 注入块实时出现待办区（不用等会话刷新）',
+    blockB.includes('### 待办') && blockB.includes(`- ⏰ ${past.slice(5)} 主实例待办：写测试`) && blockB.includes('完成待办后用 memory_task done'), blockB);
+  check('v0.9-B 任务不进热索引', !sectionOf(blockB, '### 热索引').includes('主实例待办'), sectionOf(blockB, '### 热索引'));
+  const stB = await call('memory_stats', {});
+  check('v0.9-B stats 待办与类型构成',
+    stB.tasksOpen === 1 && stB.tasksOverdue === 1 && stB.taskTokens > 0
+    && stB.kindCounts.task === 1 && stB.kindCounts.fact >= 2, { open: stB.tasksOpen, overdue: stB.tasksOverdue, counts: stB.kindCounts });
+  check('v0.9-B task 不计入待复习', stB.dueReview === dueBeforeB, { before: dueBeforeB, after: stB.dueReview });
+  const listAll = await call('memory_list', { limit: 50 });
+  const listFacts = await call('memory_list', { limit: 50, kind: 'fact' });
+  const listTasks = await call('memory_list', { limit: 50, kind: 'task' });
+  check('v0.9-B memory_list kind 过滤（默认 all 兼容）',
+    listAll.total === listFacts.total + listTasks.total
+    && listTasks.entries.every(e => e.kind === 'task') && listFacts.entries.every(e => e.kind !== 'task'),
+    { all: listAll.total, facts: listFacts.total, tasks: listTasks.total });
+  const searchTask = await call('memory_search', { query: 'memory_task 补冒烟' });
+  check('v0.9-B search 结果带 kind/taskStatus/dueAt',
+    searchTask.matches.some(m => m.kind === 'task' && m.taskStatus === 'open' && m.dueAt === past), searchTask.matches);
+  const doneB = await call('memory_task', { action: 'done', id: tAdd.id });
+  check('v0.9-B 完成任务 remaining 清空', doneB.ok === true && doneB.taskStatus === 'done' && doneB.remaining.length === 0, doneB);
+  const afterDone = await call('memory_search', { query: '主实例待办' });
+  check('v0.9-B 完成后不再注入但 search 可查',
+    !injected().includes('主实例待办：写测试') && afterDone.matches.some(m => m.taskStatus === 'done'), afterDone.matches);
+  const badAction = await call('memory_task', { action: 'bogus' });
+  check('v0.9-B 非法 action → invalid_input', badAction.ok === false && badAction.code === 'invalid_input');
+  const badDone = await call('memory_task', { action: 'done', id: 'not-exist' });
+  check('v0.9-B 不存在任务 → not_found', badDone.ok === false && badDone.code === 'not_found');
+  const skillB = await call('memory_save', { title: '主实例技能：先跑测试', content: '改动插件后先跑 node tests/smoke.mjs，ALL PASS 再提交。', kind: 'skill' });
+  const stSkill = await call('memory_stats', {});
+  check('v0.9-B skill 不进热索引但计入 kindCounts',
+    skillB.kind === 'skill' && stSkill.kindCounts.skill === 1 && !sectionOf(injected(), '### 热索引').includes('主实例技能'),
+    { counts: stSkill.kindCounts });
+  const res3 = { code: 0, body: '', writeHead(c) { this.code = c; }, end(b) { this.body = b; } };
+  await stateRoute.handler({ method: 'GET', headers: { host: '127.0.0.1:36336' } }, res3);
+  const stateB = JSON.parse(res3.body);
+  check('v0.9-B 面板 state 带 tasks/tasksOpen/tasksOverdue 且记忆列表不含 task',
+    Array.isArray(stateB.tasks) && stateB.tasksOpen === 0 && typeof stateB.tasksOverdue === 'number'
+    && stateB.entries.every(e => e.kind !== 'task'), { open: stateB.tasksOpen });
+  check('v0.9-B 面板 HTML 含待办区块与完成/丢弃按钮',
+    res.body.includes('待办（open task）') && res.body.includes('taskDone') && res.body.includes('taskDrop'));
+  const t2 = await call('memory_task', { action: 'add', title: '面板操作任务', content: '从面板按钮丢弃。' });
+  const actionRoute = routes.find(r => r.path === '/memory-fish/api/action');
+  const reqDrop = { method: 'POST', headers: { host: '127.0.0.1:36336' }, async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify({ action: 'taskDrop', id: t2.id })); } };
+  const res4 = { code: 0, body: '', writeHead(c) { this.code = c; }, end(b) { this.body = b; } };
+  await actionRoute.handler(reqDrop, res4);
+  const dropRes = JSON.parse(res4.body);
+  check('v0.9-B 面板 taskDrop 生效', dropRes.ok === true && dropRes.taskStatus === 'dropped', dropRes);
+}
 
 console.log('\n--- injected block ---');
 console.log(block);
