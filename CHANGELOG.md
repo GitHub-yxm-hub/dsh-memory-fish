@@ -3,6 +3,109 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/), versioning follows [SemVer](https://semver.org/).
 
+## [0.9.0] — 2026-10-26
+
+### Added
+- **Cache-aware injection snapshots (v0.9-A).** New `injectionMode`
+  (`session` | `daily` | `live`, default `session`) freezes the L1 hot-index lines and
+  the "reviews are due" threshold flag into a snapshot, persisted at
+  `<dir>/injection-cache.json` and replayed after a restart. `session` refreshes once per
+  session (new session / dream / consolidate), `daily` on each local day, `live` keeps
+  the 0.8 real-time behaviour. L0 profile and the C1 nudge stay live. `memory_stats` and
+  the panel API expose `injectionMode`, `injectionRebuilds`,
+  `lastInjectionRebuild{at,reason,day}`, `injectionCacheDay`.
+- **Memory kinds (v0.9-B).** Every entry gets `kind: 'fact' | 'skill' | 'task'`
+  (`fact` default; old data migrated). Tasks are excluded from the hot index, spaced
+  repetition, decay/archival and consolidation; skills are excluded from the hot index.
+- **`memory_task` tool (11 → 12 tools).** Actions `add | done | drop | list`; `dueAt` is a
+  local `YYYY-MM-DD` (invalid input → `invalid_input`), `priority` 1–5 (default 3),
+  optional `note`; open tasks with similarity ≥ `dedupeThreshold` merge in place;
+  `done`/`drop` only apply to open tasks. Every write action returns `remaining`
+  (still-open summaries) for a "what's left" loop.
+- **Injected `### 待办` block (v0.9-B).** Rendered live (not part of the L1 snapshot)
+  between profile and hot index: open tasks only, max 5 lines, overdue as `- ⏰ MM-DD …`,
+  due tasks as `- · MM-DD …`, no-deadline as `- · …`; overflow prints
+  `- …另有 N 个（memory_task list）`. Budget: new `taskTokens` (default 100), reserved out
+  of the L1 budget. When tasks exist the footer gains
+  `> 完成待办后用 memory_task done 标记，并查看剩余。`
+- **Skill kind with no-downgrade updates (v0.9-C).** `memory_save` accepts
+  `kind: 'skill'`. Skills skip the hot index, the todos block, dream's SWS merge / SHY
+  decay and `memory_consolidate` merging/archival. Same-topic updates never downgrade a
+  kind: a skill is not overwritten by a same-topic fact, while fact → skill is allowed.
+  Dream materials (SWS/SHY, Phase 4 profile, Phase 6 related memories) only use facts.
+- **Provenance `sources` (v0.9-C).** `memory_save` takes an optional `sources` array of
+  task/memory ids (deduped, at most 5 kept); updating an entry unions the new ids with the
+  old ones and keeps the latest 5. Persisted as the `sources:` frontmatter line and
+  returned by `memory_read` / `memory_search` / `memory_list` (and by `memory_save`).
+- **dream Phase 6 · skill distillation (v0.9-C).** When tasks were completed after
+  `stats.lastSkillExtract`, `memory_dream` writes `dream/YYYY-MM-DD-skill-task.md`:
+  up to 10 recently completed tasks (id / title / content / note / done time), up to 15
+  related active fact memories (shared task tags first, then most recently updated), the
+  last 3 dream-report summaries, and instructions for a subagent (1–3 skills in
+  `TITLE:` / `SKILL:` / `TAGS:` / `SOURCES:` format, ≤200 tokens each). The dream report
+  gains `## 🧠 Phase 6 · Skill 提炼` (`技能提炼：是/否` → task path). The main agent
+  hands the file to a subagent and persists the results with
+  `memory_save(kind='skill', sources=[task id])`. `stats.lastSkillExtract` is stamped only
+  when a task file was actually written; `skillExtraction: false` hides the whole phase.
+- `memory_list` gains `kind` filtering (`fact | skill | task`, default all);
+  `memory_search` / `memory_read` / `memory_list` results carry
+  `kind` / `taskStatus` / `dueAt` / `sources`; `memory_stats` adds `tasksOpen`,
+  `tasksOverdue`, `taskTokens`, `kindCounts`, `skillExtraction`, `lastSkillExtract`; the
+  panel state adds `tasks/tasksOpen/tasksOverdue`, the standalone page renders a
+  「待办（open task）」 section with done/drop buttons (`taskDone` / `taskDrop` actions),
+  and its latest-report picker ignores `*-mental-model.md` / `*-skill-task.md` task files.
+
+### Changed
+- The injected block is now rendered once per injection epoch (see `injectionMode`);
+  L1 rows and the due threshold no longer re-render every turn. `buildInjection` still
+  keeps L0 and the C1 nudge real-time.
+- `memory_save` accepts `kind` (`fact` default, `skill`) and `sources`; `task` entries can
+  only be created through `memory_task`. Frontmatter: `kind`, `task_status`, `due_at`,
+  `done_at`, `priority`, `note`, `sources`.
+- Dream phases and consolidation now skip non-fact material: `task` / `skill` entries are
+  neither merged nor decayed, and Phase 4 / Phase 6 materials only pick facts.
+- `memory_dream` returns `skillExtraction {enabled, due, taskFile, completedCount}` and its
+  report may include the `🧠 Phase 6 · Skill 提炼` section.
+
+### Fixed
+- **Whole-block hard budget guard.** The v0.8 builder could exceed `budgetTokens` because
+  of fixed text overhead (header, footer rules, threshold line); v0.9 renders the block
+  and trims L1 lines from the end until `estTokens(block) ≤ budgetTokens`.
+- Injection rebuild counters are monotonic inside a process: mutating-tool `withLock` →
+  `load()` re-reads `stats.json` but no longer resets `injectionRebuilds` /
+  `lastInjectionRebuild` (the newest rebuild wins).
+
+### Design notes
+- The cache contract is explicit now: the system prompt may only change on semantic
+  events (dream, consolidate, profile rewrite, day boundary) — never per turn or per
+  counters. v0.8.1 removed the per-turn churn; v0.9-A makes the remaining freeze
+  explicit and observable.
+- Snapshot replay on restart: the on-disk snapshot is restored on `load()`, so a clean
+  restart does not change the rendered block; a new-session invalidation re-renders the
+  same text, keeping the provider prefix cache warm (the local rebuild count may bump).
+- Todo block is intentionally *outside* the snapshot: adding/completing a task is an
+  explicit user action, and the block stays small and bounded (`taskTokens`); the
+  whole-block guard still trims the frozen L1 rows if the combination would overflow.
+- **Phase 6 follows the Phase 4 split:** the plugin only judges due-ness, prepares
+  materials and stamps `lastSkillExtract`; an isolated subagent does the extraction; the
+  main agent persists via `memory_save(kind='skill', sources=…)`. The plugin never calls
+  an LLM.
+- **`sources` is a pointer, not a graph:** ids are not validated (they may point at
+  archived entries), no traversal is done, and the list is capped at 5.
+- **Known limitation:** Phase 3 · REM still builds `links` for task/skill entries. Links
+  are never injected and don't touch the token budget, so this only affects the L2 data
+  structure; a kind filter can be added later.
+- **C1 stays real-time** (not frozen in the snapshot): its text is day-granular and only
+  changes on a dream, a day boundary, or crossing `dreamAfterHours`. Residual mid-session
+  prefix flips are a completed dream and the threshold crossing; the v0.10
+  `reminderDelivery: 'tail'` option (see `docs/DSH-APPEND-INJECTION.md`) is the alternative
+  to freezing C1.
+- Tests: 164 assertions — snapshot modes (session/daily/live, restart reuse, rebuild
+  reasons/counters), hard-budget pressure (30 long titles), kind migration and
+  no-downgrade, todo lifecycle/injection/overflow, Phase 6 due/task-file/materials/
+  `lastSkillExtract`/disabled, sources round-trip and union, dream material exclusions,
+  budget integration, panel todo routes, plus all previous suites green.
+
 ## [0.8.1] — 2026-10-26
 
 ### Fixed

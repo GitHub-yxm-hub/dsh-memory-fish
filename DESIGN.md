@@ -7,6 +7,110 @@
 
 ---
 
+## v0.9 落地变更 · 缓存契约与记忆类型
+
+> system prompt 在「没有事件发生」时必须一个字节都不变；记忆同时拆成 事实 / 技能 / 待办。
+
+### 1. 缓存契约（为什么注入块必须字节稳定）
+
+服务商按**请求前缀**命中 KV cache。system prompt 是每个请求的最前缀，它改动一个字节，整段前缀缓存就失效，长会话要重新 prefill 全部历史——一次 miss 的成本远高于多注入几十 token。所以「注入块稳定」不是优化项，是设计约束。
+
+| 注入部分 | 允许变化的时机 | 实现 |
+|---|---|---|
+| L0 画像 | 仅 `memory_profile_save`（人工/subagent 重写） | 实时读取；变化只发生在事件时刻 |
+| L1 热索引行 | 仅刷新纪元边界 | v0.9-A 快照冻结（session/daily/live） |
+| 到期阈值行 | 仅在「有 / 无到期」翻转时 | 一行布尔文案，不逐条列 |
+| C1 睡梦提醒 | 仅在做梦后 / 日界 / 跨过欠梦阈值 | 日粒度文案（无小时数、无新增条数） |
+| 「### 待办」块 | 仅在任务增删改时 | 实时渲染（不走快照），由显式操作触发 |
+| footer 规则行 | 只在「有无待办」切换时 | 常量文案 |
+
+规则：**注入文本只能因语义事件变化，绝不因时间流逝或每轮计数变化。**
+
+### 2. injectionMode 语义
+
+| 模式 | 快照何时重建 | 失效原因（reason） | 适合 |
+|---|---|---|---|
+| `session`（默认） | 新会话首步 / 做梦后 / 整理后 | init · session · dream · consolidate | 长会话，最大化缓存命中 |
+| `daily` | 每个本地日首次注入 / 做梦后 / 整理后 | init · day · dream · consolidate | 一天多会话，想每天刷新索引 |
+| `live` | 每次注入实时重建 | live（不落盘、不计数） | 测试 / 调试、短会话 |
+
+实现要点：
+
+- 快照结构 `{ day, builtAt, reason, lines, due, cold }`，落盘 `<dir>/injection-cache.json`
+- 启动 `load()` 时读回磁盘快照并信任它（前提是没有更早的事件把它标脏）；重启后可复用快照，即使新会话事件触发一次重建，输出文本也不变
+- 未完成首次 `load()` 前不缓存（避免把空索引冻住）
+- `session` 模式在 `session/event` 里检测**新会话**（忽略 subagent）→ `invalidateInjection('session')`
+- `memory_dream` / `memory_consolidate` 结束后分别标脏 `dream` / `consolidate`
+- 观测：`stats.injectionRebuilds`（进程内单调不减）、`stats.lastInjectionRebuild{at,reason,day}`，由 `memory_stats` 与面板 state 暴露
+- 整块硬预算：`estTokens(注入块) ≤ budgetTokens`，超出从 L1 末尾逐行删（正文固定开销不再导致越界）
+
+### 3. kind：事实 / 技能 / 任务
+
+| kind | 来源 | 热索引 | 待办块 | 间隔复习 | SWS 合并 / SHY 衰减 / consolidate | 去重比较 |
+|---|---|---|---|---|---|---|
+| `fact`（默认） | `memory_save` | ✅ | — | ✅ | ✅ | 与所有非 task 记忆比 |
+| `skill` | `memory_save(kind='skill')` | — | — | ✅（只读加固） | —（v0.9-C 起） | 同上 |
+| `task` | `memory_task add` | — | ✅（仅 open） | — | — | 只与 open task 比 |
+
+kind 更新规则（v0.9-C）：同主题更新时 **kind 不降级**——skill 不会被 fact 覆盖，fact → skill 允许升级；新条目按本次 `kind` 落库。
+
+任务生命周期：`open → done | dropped`（单向；`doneAt` 记录时刻）。`memory_task list` 按 逾期 → `dueAt` → `priority` 排序；所有写操作返回 `remaining`，形成「做完看还剩什么」的闭环。
+
+任务字段：`taskStatus`（open / done / dropped）、`dueAt`（本地 `YYYY-MM-DD`，非法输入 `invalid_input`）、`doneAt`、`priority`（1–5，默认 3）、`note`。frontmatter：`kind:` / `task_status:` / `due_at:` / `done_at:` / `priority:` / `note:`；旧数据迁移默认 `fact`，task 缺省字段就地补齐且**不初始化复习字段**。
+
+### 4. 「### 待办」注入块
+
+- 只列 open task；固定最多 5 行，超出 `- …另有 N 个（memory_task list）`
+- 格式：逾期 `- ⏰ MM-DD 标题`、有截止 `- · MM-DD 标题`、无截止 `- · 标题`
+- 预算 `taskTokens`（默认 100）：块自身超预算时从末尾裁行并累计溢出计数
+- 这部分预算从 L1 可用预算里扣（`budgetTokens - profileTokens - 提醒 - 待办`）
+- 有待办时 footer 增加 `> 完成待办后用 memory_task done 标记，并查看剩余。`
+- 待办块实时渲染 ⇒ 任务变化**不会**重建 L1 快照；两者叠加若超整块预算，由整块硬守卫兜底裁 L1 行
+
+### 5. 尾部 append 调研结论（v0.9 不搬）
+
+调研（详见 [docs/DSH-APPEND-INJECTION.md](./docs/DSH-APPEND-INJECTION.md)）：DSH 有公开 API 在会话尾部 append sourced `user/message`，且不失效 KV 前缀——`agent.inject()` 或 `agent/pre-step` 瀑布监听器 + `createUserMessage()`（官方 `dsh-agent-instructions` 的 `<system-reminder>` 就是这么做的）。
+
+v0.9 的决定：**仍用 system prompt + 快照，不引入 tail 注入**。理由：快照冻结后，会话内残留的翻转点只剩「会话中途做梦」（C1 行消失）、跨日 `daily` 重建各一次，以及极端情况下跨过 `dreamAfterHours` 阈值的一次；收益不足以引入新 API 面、去重状态与 subagent 过滤成本。v0.10 可选 `reminderDelivery: 'inline' | 'tail'`（默认 inline，tail 默认关）。
+
+### 6. skill 提炼与溯源（v0.9-C）
+
+#### 6.1 轻量溯源 `sources`
+
+- `memory_save` 可选 `sources`：字符串 id 数组，去重后保留最近 5 个；落盘为 frontmatter 的 `sources:`（逗号风格）
+- 更新已有条目 → 新 id 与旧 `sources` 取并集，再保留最近 5 个
+- `memory_read` / `memory_search` / `memory_list` 返回值都带 `sources`（`memory_save` 也返回）
+- 只是"这条记忆从哪来"的指针：不做图遍历、不校验 id 是否存在（可以指向已归档/已删除的 task）
+- skill 用它指回来源 task（Phase 6 落盘时 `sources=[task id]`）
+
+#### 6.2 kind 生命周期补充
+
+- `skill`：不进热索引 / 待办块；不参与 SWS 合并、SHY 衰减、`memory_consolidate` 合并与归档
+- **不降级**：同主题更新时 skill 不会被 fact 覆盖；fact → skill 允许升级
+- dream 的材料统一只取 fact：SWS 合并、SHY 衰减、Phase 4 画像材料、Phase 6 相关记忆
+- **已知限制**：Phase 3 · REM 仍会对 task / skill 建 `links`。links 不进注入、不占预算，只落在 L2 数据结构里；要收紧可以后续加 kind 过滤
+
+#### 6.3 Phase 6 · Skill 提炼流程
+
+| 步骤 | 谁做 | 做什么 |
+|---|---|---|
+| 1. 判到期 | 插件 | `skillExtraction !== false` 且存在 `status=active`、`taskStatus=done`、`doneAt > stats.lastSkillExtract` 的 task（缺 `doneAt` 保守算新） |
+| 2. 备材料 | 插件 | 完成任务 ≤10（id / 标题 / 内容 / 备注 / 完成时间）+ 相关活跃 fact ≤15（任务标签共现优先，其次最近更新）+ 最近 3 天睡梦摘要 + subagent 指令 |
+| 3. 写任务文件 | 插件 | `dream/YYYY-MM-DD-skill-task.md`；**只有写成功才**更新 `stats.lastSkillExtract`（避免每晚重复生成） |
+| 4. 报告 | 插件 | `## 🧠 Phase 6 · Skill 提炼`：`技能提炼：是 → 任务文件：…` / `技能提炼：否（无新完成的待办任务…）`；`skillExtraction: false` 时整节不出现 |
+| 5. 提炼 | subagent | 读任务文件，产出 1–3 条 skill（`TITLE:` / `SKILL:` / `TAGS:` / `SOURCES:`，中文祈使句，≤200 tokens/条，不调工具） |
+| 6. 落盘 | 主 agent | 逐条 `memory_save(kind='skill', sources=[task id])`，再 `memory_consolidate` 收尾 |
+
+`memory_dream` 返回值新增 `skillExtraction {enabled, due, taskFile, completedCount}`；`completedCount` 是"新完成"总数（材料最多取 10 条）。
+
+为什么还是 subagent：与 Phase 4 相同——插件没有 LLM 依赖、不该引入 token 成本；主会话提炼要读大量材料，太贵。插件只负责"到期判断 + 材料 + 磁盘 I/O"。
+
+#### 6.4 C1 为什么没冻结进快照（附 v0.10 备选）
+
+v0.9-A 冻结的是 L1 热索引行 + 到期阈值；C1 提醒仍实时渲染。原因：C1 文案已是日粒度（`欠梦（上次整理 YYYY-MM-DD）`），不含小时数 / 新增计数，只在「做梦 / 日界 / 跨过 `dreamAfterHours`」时变化，已足够稳定；而冻结 C1 会带来"做完梦提醒仍显示"的陈旧问题（需要额外状态去同步）。
+
+代价是会话内仍可能有 1–2 次前缀翻转：会话中途完成一次 `memory_dream`（C1 行从有到无）、极端情况下跨过 `dreamAfterHours` 阈值。若长会话占比高，v0.10 可选二选一：① 把 C1 并入注入快照（会话内彻底冻结）；② `reminderDelivery: 'tail'`，把提醒搬到会话尾部 append（DSH 公开 API：`agent/pre-step` + `createUserMessage`，不失效 KV 前缀，见 [docs/DSH-APPEND-INJECTION.md](./docs/DSH-APPEND-INJECTION.md)）。
+
 ## v0.8 落地变更 · Mental model（L0 画像自动重写）
 
 > 借鉴 Hindsight 的 mental models：为长期问题维护一份自动重写的答案，读的时候零 LLM。
