@@ -25,7 +25,7 @@ dsh-memory-fish splits *storage* from *injection*:
 | L2 warm memories | full text | on demand via tools | 0 |
 | L3 cold archive | superseded/removed versions, raw journal | never | 0 |
 
-**10 memories or 10,000 — the injected block stays the same size.** Since v0.9 the block is also frozen into a *cache-friendly snapshot* (reusable across restarts), and memories are typed as fact / skill / task — with a small live "todos" block capped at 5 lines and `taskTokens` (100 by default, reserved out of the 600).
+**10 memories or 10,000 — the injected block stays the same size.** Since v0.9 the block is also frozen into a *cache-friendly snapshot* (reusable across restarts), and memories are typed as fact / skill / task — with a small live "todos" block capped at 5 lines and `taskTokens` (100 by default, reserved out of the 600). Since v0.10 the skill library has a dedicated tool (`memory_skill`), and the block carries only one fixed reuse hint for it.
 
 ## Features
 
@@ -191,6 +191,52 @@ the append-only (tail) injection feasibility study is archived at
 [docs/DSH-APPEND-INJECTION.md](./docs/DSH-APPEND-INJECTION.md) — decision: not for v0.9,
 optional in v0.10.
 
+## Skill library (v0.10): search, reuse, revise
+
+v0.9 made skills a distinct kind, but they were only reachable through `memory_search`:
+the model would rarely think to reuse them, and there was no explicit revision entry point.
+v0.10 closes the loop with **a dedicated tool + one fixed hint line in the injected block +
+versioned revisions** — without breaking the cache contract.
+
+### The 13th tool: `memory_skill`
+
+| action | What it does |
+|---|---|
+| `list` | All active skills sorted by `updated` (default 20 / max 50): id / title / tags / updated / importance / hits |
+| `search` | Case-insensitive keyword match on title (+3) / tags (+2) / content (+1); returns id / title / tags / updated / score / excerpt (≤200 chars) and the reusable `content` (≤800 chars, `truncated` flag). A hit counts as a reuse (records `hits`, reinforces ×1.1 when `reviewEnabled`) |
+| `add` | New skill: reuses `memory_save`'s dedupe / novelty gate / NOOP / versioning / secret checks (`kind='skill'` fixed); `sources` point back to the originating tasks |
+| `update` | Revise by id: `content` replace (default) or `append` to the old content (when both are given, `content` wins); `title` / `tags` replace (≤3 tags); `sources` union (≤5). The old version goes to `history` (≤10) and its old file to `archive/`; `validFrom` / `updated` are refreshed |
+
+Error semantics: non-skill id → `invalid_kind`; missing / archived → `not_found`; empty
+query, missing content+append, bad action → `invalid_input`; secret-looking
+title / content → `secret_refused` (on update, secret-looking `tags` / `sources` values are
+filtered). Every action serializes through the write lock (`search` updates hits / review
+state).
+
+### The fixed reuse hint (cache-safe)
+
+When at least one active skill exists, the injected block gains one fixed line (no counts,
+no dates, no relative time):
+
+```text
+> 需要相关经验/历史做法时先用 memory_skill search 检索技能库；技能可用 memory_skill update 补充修订。
+```
+
+- It is a pointer, not a listing: `search` / `update` never rebuild the injection snapshot,
+  and revising skill content leaves the injected block byte-identical (skills are not
+  injected)
+- The line only appears / disappears when the library goes from empty to non-empty (or the
+  last active skill is archived) — a semantic event, same class as a todo block appearing
+- Its tokens are reserved out of the L1 budget (like the reminder / todo blocks), so the
+  whole block stays ≤ `budgetTokens`
+
+### dream Phase 6 update
+
+Phase 6 task-file instructions now persist with **`memory_skill add`** (still compatible
+with `memory_save(kind='skill', sources)`); the report's "next step" line matches.
+
+Design details are in [DESIGN.md](./DESIGN.md) under "v0.10 skill library & reuse".
+
 ## Install
 
 ```bash
@@ -207,7 +253,7 @@ Requirements: Node.js ≥ 22.19, DeepSeek Harness 0.2.x (tested on 0.2.1).
 
 ## Tools
 
-The plugin registers 12 model tools (mutations are serialized by a cross-process lock):
+The plugin registers 13 model tools (mutations are serialized by a cross-process lock):
 
 | Tool | Purpose |
 |---|---|
@@ -216,6 +262,7 @@ The plugin registers 12 model tools (mutations are serialized by a cross-process
 | `memory_read` | Read full text (>4000 chars truncated) and reinforce; returns `kind` / `sources`; tasks are not reinforced |
 | `memory_list` | Recent memories; filter by `kind` (fact / skill / task); returns `sources` |
 | `memory_task` | Todos: add / done / drop / list; `done` accepts a completion note (used as Phase 6 material) |
+| `memory_skill` | Skill library: list / search / add / update; search returns reusable content + score, update supports replace / append and keeps history (v0.10) |
 | `memory_pin` | Pin/unpin (pinned never decays) |
 | `memory_forget` | Soft delete + tombstone |
 | `memory_profile_save` | Write the L0 profile (hard-clamped to `profileTokens`, secrets refused, stamps rewrite time) |
@@ -231,8 +278,8 @@ The plugin registers 12 model tools (mutations are serialized by a cross-process
 ├── profile.md           # L0 (≤200 tok, always injected)
 ├── profile-history/     # v0.8: snapshots of the old profile before each rewrite
 ├── index.json           # metadata index (rebuildable)
-├── memories/            # L2: one Markdown per memory (kind/task frontmatter)
-├── archive/             # L3: superseded / removed originals
+├── memories/            # L2: one Markdown per memory (kind/task/skill frontmatter)
+├── archive/             # L3: superseded / removed originals (incl. pre-revision skill versions)
 ├── journal/             # auto-captured raw conversations (per-day jsonl, never injected)
 ├── dream/               # dream reports (per-day md) + *-mental-model.md + *-skill-task.md
 ├── injection-cache.json # v0.9: L1 injection snapshot (replayed on restart)
@@ -249,8 +296,8 @@ index.mjs        plugin entry: config, system-prompt injection, auto-capture, se
 lib/config.mjs   defaults + config normalization (injectionMode allow-list)
 lib/util.mjs     tokens, bigrams/Jaccard, salience, spaced repetition, redaction
 lib/store.mjs    Markdown/JSON store, journal, archive, migration, injection snapshots, task files
-lib/inject.mjs   profile + todos + hot-index block builder (snapshot + hard budget)
-lib/core.mjs     saveMemoryCore (kind/sources) / taskCore: dedupe / novelty gate / versioning / todos
+lib/inject.mjs   profile + todos + skill hint + hot-index block builder (snapshot + hard budget)
+lib/core.mjs     saveMemoryCore (kind/sources) / taskCore / skillCore: dedupe / novelty gate / versioning / todos / skill library
 lib/dream.mjs    three-stage sleep + Phase 4 profile rewrite + Phase 6 skill distillation
 lib/tools.mjs    model-facing tools (mutations serialized by lock)
 lib/panel.mjs    local HTTP panel + API
@@ -284,7 +331,7 @@ Key options: `dir`, `budgetTokens`, `profileTokens`, `maxHotLines`, `injectionMo
 ## Tests
 
 ```bash
-npm test   # 166 assertions: capture, redaction, save/dedupe/NOOP, search,
+npm test   # 204 assertions: capture, redaction, save/dedupe/NOOP, search,
            # asOf history, sleep phases + Phase 4 mental model + Phase 6 skill
            # distillation (due/task file/material caps/lastSkillExtract/disabled),
            # skill kind + no kind downgrade, sources provenance round-trip/union/
@@ -292,6 +339,10 @@ npm test   # 166 assertions: capture, redaction, save/dedupe/NOOP, search,
            # (session/daily/live, day-boundary rebuild, restart reuse, rebuild
            # reasons/counters), hard-budget pressure, kind/todo lifecycle and
            # injection, budget integration, byte-stable injection (cache friendly),
+           # v0.10 skill library (list/search scoring and reuse accounting,
+           # excerpt/content caps, add dedupe reuse, update replace/append/history/
+           # archive/error codes, same-second archive collision regression,
+           # hint presence and byte stability, budget with hint),
            # panel routes + configurable budget + todo buttons, lock release
 ```
 
@@ -302,7 +353,9 @@ CI runs on Linux and Windows with Node 22 and 24.
 Local-first, no network. Journal writes redact API keys/tokens/passwords before
 hitting disk. `memory_task` notes (`add` / `done` `note`) are checked against the secret
 patterns and refused with `secret_refused`; secret-looking values in `memory_save`
-`sources` are filtered out. The HTTP panel is localhost-only with same-origin checks but
+`sources` are filtered out. `memory_skill` add/update checks title / content against the
+same secret patterns and refuses them; secret-looking `sources` values (and `tags` on
+update) are filtered out. The HTTP panel is localhost-only with same-origin checks but
 **no authentication** — run DSH on a trusted machine. See [SECURITY.md](./SECURITY.md).
 
 ## License

@@ -24,7 +24,7 @@
 | L2 温记忆 | 完整正文 | 按需工具读取 | 0 |
 | L3 冷档案 | 压缩前原文、被替代版本 | 从不注入 | 0 |
 
-记住 10 条和记住 1000 条，注入成本一样。v0.9 起注入块还会冻结成**缓存友好的快照**（重启可复用），记忆也分成 事实 / 技能 / 待办 三类——另有一小块「待办」实时注入，最多 5 行，预算 `taskTokens`（默认 100，从 600 里扣）。
+记住 10 条和记住 1000 条，注入成本一样。v0.9 起注入块还会冻结成**缓存友好的快照**（重启可复用），记忆也分成 事实 / 技能 / 待办 三类——另有一小块「待办」实时注入，最多 5 行，预算 `taskTokens`（默认 100，从 600 里扣）。v0.10 起技能还有专用技能库（`memory_skill` 检索 / 复用 / 修订），注入块里只多一行固定提示。
 
 ## 防膨胀机制
 
@@ -210,9 +210,42 @@ system prompt 是每个请求的最前缀。它每变一个字节，服务商的
 
 设计细节见 [DESIGN.md](./DESIGN.md) 的「v0.9 缓存契约与记忆类型」；尾部注入（append sourced `user/message`）可行性调研见 [docs/DSH-APPEND-INJECTION.md](./docs/DSH-APPEND-INJECTION.md)（结论：v0.9 不搬，v0.10 可选）。
 
-## 工具（12 个）
+## v0.10 技能库：检索、复用与修订
 
-插件注册 12 个模型工具（写操作串行加锁）：
+v0.9 把 skill 变成独立类型，但技能只能靠 `memory_search` 大海捞针，模型不会主动"想起"复用；也没有显式修订入口。v0.10 补上技能库闭环——**专用工具 + 注入块一行固定提示 + 可追溯的修订**，同时不破坏缓存契约。
+
+### 第 13 个工具：`memory_skill`
+
+| action | 作用 |
+|---|---|
+| `list` | 列出全部 active skill（按 updated 倒序，默认 20 条 / 最大 50）：id / title / tags / updated / importance / hits |
+| `search` | 关键词命中标题(+3) / 标签(+2) / 正文(+1)，大小写不敏感；返回 id / title / tags / updated / score / excerpt(≤200) / content(≤800，超长 `truncated`)；命中即视为一次"复用"（记 hits，开启复习时 reinforce ×1.1） |
+| `add` | 新技能：复用 `memory_save` 的去重 / 新颖性 / NOOP / 版本 / 密钥检查逻辑（`kind='skill'` 固定），`sources` 指回来源 task |
+| `update` | 按 id 修订：`content` 替换（默认）或 `append` 追加到旧正文末尾（同时给时按 `content` 替换）；`title` / `tags` 替换（≤3）、`sources` 并集（≤5）；旧版本进 `history`（≤10）并把旧文件归档到 `archive/`，`validFrom` / `updated` 刷新 |
+
+错误语义：非 skill id → `invalid_kind`；不存在 / 已归档 → `not_found`；空 query、content 与 append 都缺、非法 action → `invalid_input`；标题 / 正文命中密钥 → `secret_refused`（update 时 `tags` / `sources` 中疑似密钥值被过滤）。所有 action 都走写锁串行（`search` 会更新 hits / 复习状态）。
+
+### 注入块里的固定复用提示（缓存安全）
+
+只要存在 ≥1 条 active skill，注入块就多**固定一行**（无计数、无日期、无相对时间）：
+
+```text
+> 需要相关经验/历史做法时先用 memory_skill search 检索技能库；技能可用 memory_skill update 补充修订。
+```
+
+- 这是缓存安全的"指针"：`search` / `update` 都**不重建**注入快照；`update` 修改技能内容不会改变注入块字节（技能不在注入块内）
+- 提示行只随「active skill 从无到有 / 从有到无」出现或消失（语义事件，和待办块出现 / 消失同类）
+- 该行 token 计入预留预算（与提醒 / 待办一致），整块仍 ≤ `budgetTokens`
+
+### dream Phase 6 落盘方式更新
+
+Phase 6 任务文件的指令从 `memory_save(kind='skill')` 改为 **`memory_skill add`**（仍兼容 `memory_save(kind='skill', sources)`）；报告的"下一步"同步更新。
+
+设计细节见 [DESIGN.md](./DESIGN.md) 的「v0.10 技能库与复用」。
+
+## 工具（13 个）
+
+插件注册 13 个模型工具（写操作串行加锁）：
 
 | 工具 | 作用 |
 |---|---|
@@ -221,6 +254,7 @@ system prompt 是每个请求的最前缀。它每变一个字节，服务商的
 | `memory_read` | 读全文（>4000 字符截断）；带 `kind` / `sources`；task 不触发复习加固 |
 | `memory_list` | 最近记忆；`kind` 可按 fact / skill / task 过滤；带 `sources` |
 | `memory_task` | 待办：add / done / drop / list；`done` 可附完成备注（进入 Phase 6 材料） |
+| `memory_skill` | 技能库：list / search / add / update；search 返回可复用正文与 score，update 支持替换 / 追加并保留历史（v0.10） |
 | `memory_pin` | 置顶/取消（置顶不参与衰减） |
 | `memory_forget` | 软删除 + 墓碑 |
 | `memory_profile_save` | 写 L0 画像（超长硬截断、拒密钥，记录重写时间） |
@@ -236,8 +270,8 @@ system prompt 是每个请求的最前缀。它每变一个字节，服务商的
 ├── profile.md           # L0（≤200 tok，常驻注入）
 ├── profile-history/     # v0.8：每次重写前的旧画像快照，可回滚
 ├── index.json           # 元数据索引（可重建）
-├── memories/            # L2：每条一个 Markdown（含 kind/task frontmatter）
-├── archive/             # L3：旧版本、被替代、被遗忘的原文
+├── memories/            # L2：每条一个 Markdown（含 kind/task/skill frontmatter）
+├── archive/             # L3：旧版本、被替代、被遗忘的原文（含 skill 修订前的旧版本）
 ├── journal/             # 自动捕获的原始对话（按天 jsonl，永不注入）
 ├── dream/               # 睡梦报告（按天 md）+ 画像重写任务（*-mental-model.md）+ 技能提炼任务（*-skill-task.md）
 ├── injection-cache.json # v0.9：L1 注入快照（重启复用；删掉只会重建一次）
@@ -279,8 +313,8 @@ index.mjs        插件入口：配置、注入、自动捕获、会话纪元、
 lib/config.mjs   默认值 + 配置校验（injectionMode 白名单）
 lib/util.mjs     token 估算、bigram/Jaccard、显著性、间隔重复、脱敏
 lib/store.mjs    Markdown/JSON 存储、journal、归档、迁移、注入快照、任务文件
-lib/inject.mjs   画像 + 待办 + 热索引注入块（快照 + 硬预算）
-lib/core.mjs     saveMemoryCore（kind/sources）/ taskCore：去重 / 门控 / 版本 / 待办
+lib/inject.mjs   画像 + 待办 + 技能提示 + 热索引注入块（快照 + 硬预算）
+lib/core.mjs     saveMemoryCore（kind/sources）/ taskCore / skillCore：去重 / 门控 / 版本 / 待办 / 技能库
 lib/dream.mjs    三阶段睡眠 + Phase 4 画像重写 + Phase 6 技能提炼
 lib/tools.mjs    模型工具（写操作加锁串行）
 lib/panel.mjs    本地 HTTP 面板 + API
@@ -292,12 +326,15 @@ client/client.js 设置页面板（浏览器半）
 ## 测试
 
 ```bash
-npm test   # 166 项断言：捕获、脱敏、保存/去重/NOOP、检索、asOf 历史、
+npm test   # 204 项断言：捕获、脱敏、保存/去重/NOOP、检索、asOf 历史、
            # 睡眠三阶段 + Phase 4 画像重写 + Phase 6 技能提炼（到期判定/任务文件/
            # 材料上限/lastSkillExtract/关闭）、skill 类型与 kind 不降级、sources 溯源
            # 往返/并集/NOOP 合并/密钥过滤、note 密钥拦截、注入快照三模式
            # （session/daily/live、跨日重建、重启复用、重建原因与计数）、
            # 硬预算压力、kind/待办生命周期与注入、预算整合、注入块字节稳定（缓存友好）、
+           # v0.10 技能库（list/search 评分与复用计数、excerpt/content 上限、
+           # add 去重复用、update 替换/追加/history/archive/错误码、同秒连续归档不覆盖、
+           # 复用提示的出现与字节稳定、含提示时的预算）、
            # 面板路由/预算随配置/待办按钮、锁释放
 ```
 
@@ -305,7 +342,7 @@ CI 在 Linux / Windows × Node 22 / 24 上跑。
 
 ## 安全
 
-本地优先、无网络。journal 落盘前会脱敏密钥；`memory_task` 的备注（`add` / `done` 的 `note`）命中密钥检测会直接拒绝（`secret_refused`），`memory_save` 的 `sources` 中疑似密钥值会被过滤。HTTP 面板仅限 localhost 且有同源校验，但**没有鉴权**——请只在可信机器上运行。详见 [SECURITY.md](./SECURITY.md)。
+本地优先、无网络。journal 落盘前会脱敏密钥；`memory_task` 的备注（`add` / `done` 的 `note`）命中密钥检测会直接拒绝（`secret_refused`），`memory_save` 的 `sources` 中疑似密钥值会被过滤；`memory_skill` 的 `title` / `content` 同样过密钥检测（命中拒绝），`sources`（以及 update 的 `tags`）中疑似密钥值会被过滤。HTTP 面板仅限 localhost 且有同源校验，但**没有鉴权**——请只在可信机器上运行。详见 [SECURITY.md](./SECURITY.md)。
 
 ## 设计
 

@@ -7,6 +7,61 @@
 
 ---
 
+## v0.10 落地变更 · 技能库与复用
+
+> skill 不进热索引（长正文、按需取用），但需要让模型"想起来用"。v0.10 用「专用工具 + 一行固定提示 + 可追溯修订」解决，同时不破坏缓存契约。
+
+### 1. 为什么单独做技能库
+
+v0.9 已有 `kind='skill'`：不进热索引、不参与合并 / 衰减，是提炼产物。但有两个问题：
+
+- **想不起来复用**：skill 只能靠 `memory_search` 大海捞针，模型不知道"应该先查技能"；
+- **没有修订入口**：只能同主题 `memory_save` 覆盖，无法显式"追加一条经验"。
+
+v0.10 的设计取舍：**不把 skill 塞进 L1**（会撑爆 400-token 热索引预算，且技能正文长度不受控），而是给一个 ~20 token 的**固定指针**，把"检索成本"留到真正需要时付。
+
+### 2. 工具面：`memory_skill`（第 13 个工具）
+
+| action | 行为 | 关键字段 / 错误 |
+|---|---|---|
+| `list` | 全部 active skill，按 updated 倒序 | 默认 20 / 最大 50；返回 id / title / tags / updated / importance / hits |
+| `search` | 标题(+3) / 标签(+2) / 正文(+1) 关键词命中（大小写不敏感） | 返回 score / excerpt(≤200) / content(≤800+truncated)；命中记 hits，`reviewEnabled` 时 reinforce ×1.1（视为一次复用） |
+| `add` | 复用 `saveMemoryCore(kind='skill')`：去重 / 新颖性 / NOOP / 版本 / 密钥检查 / `sources` 规范化全部复用 | 与 `memory_save(kind='skill')` 行为一致 |
+| `update` | 按 id 修订：`content` 替换（默认）或 `append` 追加（同时给按 content 替换）；`title` / `tags` 替换（≤3）；`sources` 并集（≤5） | 旧版本进 history（≤10）+ 旧文件 archive；validFrom / updated 刷新 |
+
+错误语义：非 skill → `invalid_kind`；不存在 / 已归档 → `not_found`；空 query、缺 content+append、非法 action → `invalid_input`；标题 / 正文含密钥 → `secret_refused`（update 时 tags / sources 过滤）。
+
+所有 action 都进 `MUTATING` 写锁（`search` 会更新 hits / 复习状态）。
+
+### 3. 缓存安全：一行固定提示
+
+存在 ≥1 条 active skill 时，注入块 footer 多一行常量：
+
+```text
+> 需要相关经验/历史做法时先用 memory_skill search 检索技能库；技能可用 memory_skill update 补充修订。
+```
+
+缓存契约新增一行：
+
+| 注入部分 | 允许变化的时机 | 实现 |
+|---|---|---|
+| 技能库提示行 | 仅在「active skill 从无到有 / 从有到无」时 | 固定文案，无计数 / 日期 / 相对时间；token 计入 reservedTokens |
+
+- `search` / `update` **不** `invalidateInjection`；`update` 修改技能内容不会改变注入块字节（技能不在注入块内）；
+- 提示行不随技能数量、标题、更新时间变化（只取决于"存在性"布尔）；
+- 提示 token 从 L1 可用预算里预留（与提醒 / 待办一致），整块仍 ≤ `budgetTokens`；
+- 已知边界：技能库从空到有（或最后一条归档）会让注入块变化一次——这是无法避免的语义事件，和待办块出现 / 消失同类。
+
+### 4. 与 Phase 6 的关系：提炼 → 复用 → 修订闭环
+
+1. dream Phase 6 有"新完成 task"时生成任务文件（材料逻辑不变）；
+2. subagent 按材料提炼 1–3 条 skill；
+3. 主 agent 用 **`memory_skill add`** 落盘（兼容旧的 `memory_save(kind='skill', sources)`）；
+4. 日常任务里先 `memory_skill search` 检索、`list` 浏览，命中即复用（同时记一次复习）；
+5. 发现更好做法时 `memory_skill update append` 追加修订，旧版本留在 history / archive 可回溯。
+
+> 为什么 skill 仍然不进注入块：技能是"长正文 + 低频复用"，进 L1 会挤掉热索引且长度不可控；一行固定提示 + 按需 search 才是 O(1) 注入成本下的正确形态。
+
 ## v0.9 落地变更 · 缓存契约与记忆类型
 
 > system prompt 在「没有事件发生」时必须一个字节都不变；记忆同时拆成 事实 / 技能 / 待办。

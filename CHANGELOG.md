@@ -3,6 +3,60 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/), versioning follows [SemVer](https://semver.org/).
 
+## [0.10.0] — 2026-10-26
+
+### Added
+- **`memory_skill` tool (12 → 13 tools).** A dedicated skill-library tool with
+  `action: list | search | add | update`, registered in the mutation lock set.
+  - `list` returns active skills sorted by `updated` (default 20 / max 50) with
+    id / title / tags / updated / importance / hits.
+  - `search` scores title (+3) / tags (+2) / content (+1), case-insensitive, and returns
+    id / title / tags / updated / score / excerpt (≤200 chars) plus the reusable
+    `content` (≤800 chars, `truncated` flag). A hit counts as a reuse: `hits` / `lastHit`
+    are recorded and, with `reviewEnabled`, the entry is reinforced ×1.1.
+  - `add` reuses `saveMemoryCore` with `kind='skill'`, so dedupe / novelty gate / NOOP /
+    versioning / secret checks / `sources` normalization behave exactly like `memory_save`.
+  - `update` revises a skill by id: `content` replace (default) or `append` to the old
+    content (when both are given, `content` wins); `title` / `tags` replace (≤3 tags);
+    `sources` union (≤5). The previous version goes to `history` (≤10) and its old file
+    to `archive/`, and `validFrom` / `updated` are refreshed. Errors: `invalid_kind`
+    (non-skill id), `not_found` (missing / archived), `invalid_input` (empty query,
+    missing content+append, bad action), `secret_refused` on secret-looking
+    title / content (secret-looking `tags` / `sources` values are filtered when updating).
+- **Cache-safe reuse hint in the injected block (v0.10.0).** When at least one active
+  skill exists, the block gains one fixed line (no counts, no dates, no relative time):
+  `> 需要相关经验/历史做法时先用 memory_skill search 检索技能库；技能可用 memory_skill update 补充修订。`
+  Its tokens are reserved out of the L1 budget, and `search` / `update` never invalidate
+  the injection snapshot — revising a skill leaves the injected block byte-identical.
+
+### Changed
+- **dream Phase 6 instructions now persist with `memory_skill add`** (still compatible
+  with `memory_save(kind='skill', sources)`); the report's "next step" line matches.
+- Skills stay out of the hot index: the hint line is the only injected trace of the
+  skill library.
+
+### Fixed
+- **`archiveContent` same-second collision (v0.10.0 polish).** Archiving the same entry
+  twice within one second (now common with consecutive skill revisions) no longer
+  overwrites the previous archive file — a numeric suffix is appended, so every revision
+  stays recoverable.
+
+### Design notes
+- Why a dedicated skill tool but no hot-index lines: skills are long-form, low-frequency
+  reusable procedures. Listing them in L1 would blow the 400-token hot-index budget and
+  churn on every edit; a ~20-token fixed hint plus on-demand `search` keeps injection cost
+  O(1) while making the library discoverable.
+- Cache contract extension: the hint's presence is a boolean over "is there an active
+  skill", never a count or timestamp, so the system prompt only changes when the first
+  skill is added (or the last one is archived) — a semantic event, same class as a todo
+  block appearing / disappearing.
+- Revisions are versioned like memory updates: `history` (≤10) + archived old file +
+  refreshed `validFrom`, so an "improved playbook" never silently erases the old one.
+- `memory_skill` joins the `MUTATING` lock set because `search` updates hits / review
+  state; all actions therefore serialize across processes.
+- Tests: 204 assertions — 38 new (37 skill-library assertions + 1 `archiveContent`
+  same-second collision regression) on top of the v0.9 suite, which stays green.
+
 ## [0.9.0] — 2026-10-26
 
 ### Added
