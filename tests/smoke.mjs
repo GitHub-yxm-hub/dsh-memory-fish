@@ -228,6 +228,9 @@ const bootFishStore = async (overrides = {}) => {
   check('v0.8 任务文件含当前画像', task.includes('铁凝：偏好中文、语气轻松、喜欢表情包。'), task.slice(0, 160));
   check('v0.8 任务文件含最近记忆 id/标题/标签/正文', task.includes(m.id) && task.includes('画像重写材料记忆') && task.includes('[测试]') && task.includes('铁凝喜欢写代码和折腾电脑'), task.slice(0, 200));
   check('v0.8 任务文件含 subagent 指令', task.includes('画像重写员') && task.includes('TOKENS:') && task.includes('memory_profile_archive'), task.slice(-300));
+  check('v0.10.1 画像指令明确禁止任务/日程并带落盘自检',
+    task.includes('任务/日程') && task.includes('落盘前自检') && task.includes('工具用法规则')
+    && task.includes('软偏好') && !task.includes('- 不写项目细节、不写过程状态、不写密钥；'), task.slice(-700));
 }
 {
   const { store, cfg } = await bootFishStore({ mentalModel: true, mentalModelEveryDays: 7 });

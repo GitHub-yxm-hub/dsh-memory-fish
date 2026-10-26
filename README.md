@@ -332,7 +332,7 @@ client/client.js 设置页面板（浏览器半）
 ## 测试
 
 ```bash
-npm test   # 204 项断言：捕获、脱敏、保存/去重/NOOP、检索、asOf 历史、
+npm test   # 205 项断言：捕获、脱敏、保存/去重/NOOP、检索、asOf 历史、
            # 睡眠三阶段 + Phase 4 画像重写 + Phase 6 技能提炼（到期判定/任务文件/
            # 材料上限/lastSkillExtract/关闭）、skill 类型与 kind 不降级、sources 溯源
            # 往返/并集/NOOP 合并/密钥过滤、note 密钥拦截、注入快照三模式

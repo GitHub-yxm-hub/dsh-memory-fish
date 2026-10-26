@@ -331,7 +331,7 @@ Key options: `dir`, `budgetTokens`, `profileTokens`, `maxHotLines`, `injectionMo
 ## Tests
 
 ```bash
-npm test   # 204 assertions: capture, redaction, save/dedupe/NOOP, search,
+npm test   # 205 assertions: capture, redaction, save/dedupe/NOOP, search,
            # asOf history, sleep phases + Phase 4 mental model + Phase 6 skill
            # distillation (due/task file/material caps/lastSkillExtract/disabled),
            # skill kind + no kind downgrade, sources provenance round-trip/union/

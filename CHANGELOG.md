@@ -3,6 +3,23 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/), versioning follows [SemVer](https://semver.org/).
 
+## [0.10.1] — 2026-10-26
+
+### Fixed
+- **L0 mental-model rewrite prompt was too loose.** The Phase 4 task-file instructions
+  only said "write facts that stay true for a month / no project details", so the
+  subagent put task-like content (e.g. "send a tech briefing at 09:00 every day") and
+  project requirements ("zero dependencies") into the user profile, and repeated the
+  injected block's footer rules ("save only at conclusion time"). The prompt now:
+  - states that the L0 profile answers "who the user is", not a task list or tool manual;
+  - forbids tasks / schedules / timers / todos / project details / tool-usage rules /
+    process state / secrets in the profile;
+  - requires preferences to be backed by multiple memories (else omit or soften);
+  - asks the writer to keep repeated-but-still-valid lines and not pad the profile;
+  - adds a pre-save self-check: if the text contains "每天/每周/定时/待办/记得/9:00"-style
+    scheduling wording, delete it before output.
+- Tests: 205 assertions (+1 for the tightened prompt contract; existing 204 green).
+
 ## [0.10.0] — 2026-10-26
 
 ### Added

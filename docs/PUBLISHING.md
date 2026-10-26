@@ -11,7 +11,7 @@ ecosystem. Nothing here requires modifying the plugin itself.
 
 ```bash
 cd projects/memory-fish
-npm test              # 204 assertions must pass
+npm test              # 205 assertions must pass
 node --check index.mjs
 git status            # working tree clean
 ```
