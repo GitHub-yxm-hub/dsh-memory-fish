@@ -282,7 +282,13 @@ Phase 6 任务文件的指令从 `memory_save(kind='skill')` 改为 **`memory_sk
 
 ## 安装
 
-注册进 DSH profile：
+从 npm（v0.10.0 已发布，`latest`）：
+
+```bash
+dsh plugin --profile web add dsh-memory-fish
+```
+
+或注册本地开发目录：
 
 1. 把本目录复制到 `<profile>/node_modules/dsh-memory-fish/`
 2. 在 `<profile>/package.json` 的 `dsh.profile.bundles` 加入 `"dsh-memory-fish"`，

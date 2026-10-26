@@ -3,9 +3,9 @@
 Copy-paste material for releasing `dsh-memory-fish` and listing it in the DSH
 ecosystem. Nothing here requires modifying the plugin itself.
 
-> Status (2026-10-26): the repo is at **v0.10.0**; npm latest is still **0.7.0** —
-> 0.8.x, 0.9.0 and 0.10.0 have **not** been published. Tagging, pushing, publishing and
-> 2FA are the maintainer's steps; agent sessions must not do them.
+> Status (2026-10-26): repo **v0.10.0**; **npm `latest` = 0.10.0**（2026-10-26 发布，
+> tarball shasum `7cbfc216…`）。0.8.x / 0.9.0 未发布（直接跳过）。后续发版的 tag / push /
+> publish / 2FA 仍由维护者本地执行；agent 会话不要执行 publish。
 
 ## 0. Pre-flight
 

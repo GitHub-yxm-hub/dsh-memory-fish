@@ -240,7 +240,7 @@ Design details are in [DESIGN.md](./DESIGN.md) under "v0.10 skill library & reus
 ## Install
 
 ```bash
-# from npm (once published)
+# from npm (latest: 0.10.0)
 dsh plugin --profile web add dsh-memory-fish
 
 # or from a local clone
